@@ -1,0 +1,190 @@
+import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { useToast } from '../../contexts/ToastContext';
+import { 
+  MapPin, Clock, DollarSign, AlertCircle, Timer, 
+  Filter, Search, ChevronRight, RefreshCw, XCircle
+} from 'lucide-react';
+import { api } from '../../lib/api';
+
+type ViewState = 'loading' | 'empty' | 'error' | 'success';
+
+interface Offer {
+  id: string;
+  facility: string;
+  role: string;
+  date: string;
+  time: string;
+  pay: string;
+  distance: string;
+  urgency: string;
+  requirements: string[];
+  expires: string;
+}
+
+export default function DoctorHome() {
+  const toast = useToast();
+  const [viewState, setViewState] = useState<ViewState>('loading');
+  const [offers, setOffers] = useState<Offer[]>([]);
+  const [activeFilter, setActiveFilter] = useState<string>('all');
+
+  const fetchOffers = useCallback(async () => {
+    try {
+      setViewState('loading');
+      const data = await api.get('/shifts/feed?limit=50');
+      const mapped: Offer[] = (data.shifts || []).map((s: any) => {
+        const start = s.start_time ? new Date(s.start_time) : null;
+        const end = s.end_time ? new Date(s.end_time) : null;
+        const dateStr = start ? (start.toDateString() === new Date().toDateString() ? 'Today' : start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })) : 'N/A';
+        const timeStr = start && end ? `${start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })} - ${end.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}` : 'N/A';
+        return {
+          id: s.id,
+          facility: s.facility_name || 'Facility',
+          role: s.specialty_name || s.title || 'General',
+          date: dateStr,
+          time: timeStr,
+          pay: `Rs. ${(s.payout_pkr || 0).toLocaleString()}`,
+          distance: 'Nearby',
+          urgency: s.urgency === 'critical' ? 'Urgent' : s.urgency === 'high' ? 'High' : 'Standard',
+          requirements: s.required_skills ? JSON.parse(s.required_skills) : [],
+          expires: '2 hours',
+        };
+      });
+      setOffers(mapped);
+      setViewState(mapped.length === 0 ? 'empty' : 'success');
+    } catch (err) {
+      console.error('Failed to fetch offers:', err);
+      setViewState('error');
+    }
+  }, []);
+
+  useEffect(() => { fetchOffers(); }, [fetchOffers]);
+
+  const filteredOffers = offers.filter(o => {
+    if (activeFilter === 'urgent') return o.urgency === 'Urgent' || o.urgency === 'High';
+    if (activeFilter === 'high_pay') return parseInt(o.pay.replace(/[^\d]/g, '')) >= 15000;
+    return true;
+  });
+
+  const handleAccept = async (shiftId: string) => {
+    try {
+      await api.post('/bookings/accept', { shiftId });
+      toast.success('Shift accepted!', 'Check your bookings for details.');
+      fetchOffers();
+    } catch (err: any) {
+      toast.error('Accept Failed', err.message || 'Failed to accept shift');
+    }
+  };
+
+  if (viewState === 'loading') {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
+        <RefreshCw className="w-10 h-10 text-emerald-600 animate-spin" />
+        <p className="text-slate-500 font-medium">Finding shifts near you...</p>
+      </div>
+    );
+  }
+
+  if (viewState === 'error') {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
+        <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-2">
+          <XCircle className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-slate-900">Connection Error</h2>
+        <p className="text-slate-500 text-center max-w-md">Unable to load shift offers. Please check your connection.</p>
+        <button onClick={() => fetchOffers()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition-colors">
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5 pb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Shift Offers</h1>
+          <p className="text-sm text-slate-500">Available shifts matching your profile and radius.</p>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2">
+        <button onClick={() => setActiveFilter('all')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-full whitespace-nowrap shadow-sm border ${activeFilter === 'all' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}>
+          All Shifts
+        </button>
+        <button onClick={() => setActiveFilter('urgent')} className={`px-4 py-2 text-sm font-medium rounded-full whitespace-nowrap border ${activeFilter === 'urgent' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}>
+          Urgent Only
+        </button>
+        <button onClick={() => setActiveFilter('high_pay')} className={`px-4 py-2 text-sm font-medium rounded-full whitespace-nowrap border ${activeFilter === 'high_pay' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}>
+          High Pay
+        </button>
+      </div>
+
+      {/* Offers List */}
+      {viewState === 'empty' || filteredOffers.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 px-4 bg-white rounded-xl border border-slate-200 border-dashed">
+          <div className="w-16 h-16 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mb-4">
+            <Search className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-900 mb-1">No offers right now</h3>
+          <p className="text-slate-500 text-center max-w-sm">
+            We'll notify you when new shifts match your profile and location.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {filteredOffers.map((offer) => (
+            <div key={offer.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden hover:border-emerald-300 transition-colors">
+              <div className="p-5">
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      {offer.urgency === 'Urgent' && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-red-100 text-red-700 border border-red-200">
+                          <AlertCircle className="w-3 h-3" /> Urgent
+                        </span>
+                      )}
+                      <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-100">
+                        <Timer className="w-3 h-3" /> Expires in {offer.expires}
+                      </span>
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900">{offer.role}</h3>
+                    <p className="text-sm text-slate-600 font-medium">{offer.facility}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-lg font-bold text-emerald-600">{offer.pay}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mb-4 text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-slate-400" /> <span>{offer.date} • {offer.time}</span></div>
+                  <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-slate-400" /> <span>{offer.distance} away</span></div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {offer.requirements.map(req => (
+                    <span key={req} className="px-2 py-1 bg-white border border-slate-200 rounded text-xs font-medium text-slate-600">
+                      {req}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="flex gap-3 pt-4 border-t border-slate-100">
+                  <Link to={`/doctor/shifts/${offer.id}`} className="flex-1 py-2.5 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors text-center">
+                    View Details
+                  </Link>
+                  <button onClick={() => handleAccept(offer.id)} className="flex-1 py-2.5 bg-emerald-600 text-white text-sm font-bold rounded-lg hover:bg-emerald-700 transition-colors shadow-sm shadow-emerald-600/20">
+                    Accept Shift
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+

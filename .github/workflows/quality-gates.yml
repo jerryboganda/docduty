@@ -1,0 +1,113 @@
+name: quality-gates
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: docduty_test
+          POSTGRES_USER: docduty
+          POSTGRES_PASSWORD: docduty
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docduty -d docduty_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      NODE_ENV: test
+      FRONTEND_ORIGIN: http://localhost:3000,http://localhost:8080
+      START_BACKGROUND_JOBS: "false"
+      JWT_SECRET: docduty-ci-secret
+      JWT_REFRESH_SECRET: docduty-ci-refresh-secret
+      DATABASE_URL: postgresql://docduty:docduty@localhost:5432/docduty_test
+      TEST_DATABASE_URL: postgresql://docduty:docduty@localhost:5432/docduty_test
+      MIGRATION_DATABASE_URL: postgresql://docduty:docduty@localhost:5432/docduty_test
+      DATABASE_SSL_MODE: disable
+      SEED_REFERENCE_DATA: "true"
+      SEED_DEMO_DATA: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Backend quality gates
+        run: npm run ci
+
+  website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install website dependencies
+        run: npm ci
+
+      - name: Website lint
+        run: npm run lint
+
+      - name: Website build
+        run: npm run build
+
+      - name: Website tests
+        run: npm run test
+
+  mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: mobile-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.5"
+          channel: stable
+          cache: true
+
+      - name: Install mobile dependencies
+        run: flutter pub get
+
+      - name: Mobile analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Mobile tests
+        run: flutter test

@@ -1,0 +1,99 @@
+services:
+  docduty-postgres:
+    container_name: docduty-postgres
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-docduty}
+      POSTGRES_USER: ${POSTGRES_USER:-docduty}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docduty}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-docduty} -d ${POSTGRES_DB:-docduty}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    volumes:
+      - docduty-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - default
+
+  docduty-api:
+    container_name: docduty-api
+    build:
+      context: ../..
+      dockerfile: ./backend/api.Dockerfile
+    env_file:
+      - ../.env.local
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://docduty:docduty@docduty-postgres:5432/docduty}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgresql://docduty:docduty@docduty-postgres:5432/docduty}
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:-postgresql://docduty:docduty@docduty-postgres:5432/docduty_test}
+      UPLOADS_DIR: /app/data/uploads
+      START_BACKGROUND_JOBS: "false"
+    depends_on:
+      docduty-postgres:
+        condition: service_healthy
+    volumes:
+      - ../data/uploads:/app/data/uploads
+    restart: unless-stopped
+    networks:
+      - default
+      - npm_proxy
+
+  docduty-worker:
+    container_name: docduty-worker
+    build:
+      context: ../..
+      dockerfile: ./backend/api.Dockerfile
+    command: ["npm", "run", "worker"]
+    env_file:
+      - ../.env.local
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://docduty:docduty@docduty-postgres:5432/docduty}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgresql://docduty:docduty@docduty-postgres:5432/docduty}
+      TEST_DATABASE_URL: ${TEST_DATABASE_URL:-postgresql://docduty:docduty@docduty-postgres:5432/docduty_test}
+      UPLOADS_DIR: /app/data/uploads
+      START_BACKGROUND_JOBS: "true"
+    depends_on:
+      docduty-postgres:
+        condition: service_healthy
+    volumes:
+      - ../data/uploads:/app/data/uploads
+    restart: unless-stopped
+    networks:
+      - default
+
+  docduty-portal:
+    container_name: docduty-portal
+    build:
+      context: ../..
+      dockerfile: ./backend/ops/Dockerfile.portal
+      args:
+        VITE_API_URL: https://api.docduty.com.pk/api
+    depends_on:
+      - docduty-api
+    restart: unless-stopped
+    networks:
+      - default
+      - npm_proxy
+
+  docduty-marketing:
+    container_name: docduty-marketing
+    build:
+      context: ../..
+      dockerfile: ./backend/ops/Dockerfile.marketing
+      args:
+        VITE_API_URL: https://api.docduty.com.pk/api
+        MOBILE_API_BASE_URL: https://api.docduty.com.pk/api
+    restart: unless-stopped
+    networks:
+      - npm_proxy
+
+volumes:
+  docduty-postgres-data:
+
+networks:
+  npm_proxy:
+    external: true
+    name: nginx-proxy-manager_default

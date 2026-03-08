@@ -1,0 +1,19 @@
+node_modules
+dist
+build
+coverage
+.git
+.github
+.codex-logs
+deploy_bundle
+DocDuty Main Website/node_modules
+DocDuty Main Website/dist
+DocDuty Mobile App/.dart_tool
+DocDuty Mobile App/build
+DocDuty Mobile App/ios/Pods
+DocDuty Mobile App/android/.gradle
+DocDuty Mobile App/windows/flutter/ephemeral
+DocDuty Mobile App/linux/flutter/ephemeral
+DocDuty Mobile App/macos/Flutter/ephemeral
+*.log
+.env

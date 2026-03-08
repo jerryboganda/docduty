@@ -1,0 +1,1 @@
+export const PUBLIC_SUPPORT_PHONE = "+92 321 4261 950";
