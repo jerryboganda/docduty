@@ -18,10 +18,10 @@ function parsePage(value: unknown, fallback: number): number {
 }
 
 /**
- * GET /api/wallets/balance
+ * GET /api/wallets/balance (also aliased as /api/wallets/me for mobile)
  */
 walletsRouter.get(
-  '/balance',
+  ['/balance', '/me'],
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
     const wallet = await db.prepare<any>('SELECT * FROM wallets WHERE user_id = ?').get(req.user!.userId);
@@ -31,22 +31,29 @@ walletsRouter.get(
       return;
     }
 
-    res.json({
+    const body = {
       id: wallet.id,
+      userId: wallet.user_id,
       balancePkr: wallet.balance_pkr,
       heldPkr: wallet.held_pkr,
       availablePkr: wallet.balance_pkr - wallet.held_pkr,
       totalEarnedPkr: wallet.total_earned_pkr,
       totalSpentPkr: wallet.total_spent_pkr,
-    });
+    };
+    // /me returns { wallet: ... } for mobile compat; /balance returns flat for web compat
+    if (req.path === '/me') {
+      res.json({ wallet: body });
+    } else {
+      res.json(body);
+    }
   }),
 );
 
 /**
- * GET /api/wallets/transactions
+ * GET /api/wallets/transactions (also aliased as /api/wallets/ledger for mobile)
  */
 walletsRouter.get(
-  '/transactions',
+  ['/transactions', '/ledger'],
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
     const wallet = await db.prepare<any>('SELECT id FROM wallets WHERE user_id = ?').get(req.user!.userId);
@@ -100,7 +107,8 @@ walletsRouter.post(
   requireRole('platform_admin'),
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const { amountPkr, targetUserId, reference } = req.body;
+    const { targetUserId, reference } = req.body;
+    const amountPkr = req.body.amountPkr ?? req.body.amount;
 
     if (!amountPkr || typeof amountPkr !== 'number' || !Number.isInteger(amountPkr) || amountPkr <= 0) {
       res.status(400).json({ error: 'amountPkr must be a positive integer' });
@@ -144,7 +152,8 @@ walletsRouter.post(
   '/payout',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const { amountPkr, paymentMethod } = req.body;
+    const amountPkr = req.body.amountPkr ?? req.body.amount;
+    const paymentMethod = req.body.paymentMethod ?? req.body.bankDetails;
 
     if (!amountPkr || typeof amountPkr !== 'number' || !Number.isInteger(amountPkr) || amountPkr <= 0) {
       res.status(400).json({ error: 'amountPkr must be a positive integer' });

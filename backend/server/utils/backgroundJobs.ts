@@ -158,6 +158,19 @@ async function processAutoSettlement(booking: any): Promise<void> {
   try {
     const db = getDb();
     await db.transaction(async () => {
+      // C2b fix: Atomic idempotency check to prevent double settlement
+      const locked = await db.prepare(
+        'SELECT settled_at FROM bookings WHERE id = ? FOR UPDATE'
+      ).get(booking.id) as any;
+
+      if (locked?.settled_at) {
+        return; // Already settled
+      }
+
+      await db.prepare(
+        "UPDATE bookings SET settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      ).run(booking.id);
+
       const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id) as any;
       if (posterWallet) {
         await db.prepare("UPDATE wallets SET held_pkr = GREATEST(0, held_pkr - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?")

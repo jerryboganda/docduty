@@ -45,9 +45,8 @@ const footerSections = [
 ];
 
 const socialLinks = [
-  { label: "LinkedIn", href: "#" },
-  { label: "Twitter", href: "#" },
-  { label: "Facebook", href: "#" },
+  { label: "LinkedIn", href: "https://www.linkedin.com/company/docduty" },
+  { label: "Facebook", href: "https://www.facebook.com/docduty" },
 ];
 
 const Footer = () => {

@@ -79,7 +79,7 @@ export default function DoctorLayout() {
       return;
     }
 
-    const gatedStatuses = ['NOT_STARTED', 'IN_PROGRESS', 'RESUBMISSION_REQUIRED', 'REVERIFICATION_REQUIRED'];
+    const gatedStatuses = ['NOT_STARTED', 'IN_PROGRESS', 'SUBMITTED', 'UNDER_REVIEW', 'RESUBMISSION_REQUIRED', 'REVERIFICATION_REQUIRED'];
     if (!gatedStatuses.includes(summary.status)) {
       setShowVerificationGate(false);
       return;

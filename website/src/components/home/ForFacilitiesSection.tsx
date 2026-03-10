@@ -34,7 +34,7 @@ const FacilityDashboard = () => {
           <div className="w-3 h-3 rounded-full bg-success/60" />
         </div>
         <div className="flex-1 mx-3 h-6 rounded-md bg-secondary flex items-center px-3">
-          <span className="text-[10px] text-muted-foreground">app.docduty.pk/facility/dashboard</span>
+          <span className="text-[10px] text-muted-foreground">portal.docduty.com.pk/facility/dashboard</span>
         </div>
       </div>
 

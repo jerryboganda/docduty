@@ -34,3 +34,19 @@ if (result.status !== 0) {
 }
 
 console.log(`Backup created: ${backupPath}`);
+
+// ── Retention sweep — keep the most recent N backups ────────────────────────
+const retainCount = Number(process.env.BACKUP_RETAIN_COUNT) || 30;
+const existing = fs
+  .readdirSync(backupsDir)
+  .filter((f) => f.startsWith('docduty-') && (f.endsWith('.dump') || f.endsWith('.sql')))
+  .sort(); // ISO timestamps sort lexicographically
+
+if (existing.length > retainCount) {
+  const toDelete = existing.slice(0, existing.length - retainCount);
+  for (const file of toDelete) {
+    fs.unlinkSync(path.join(backupsDir, file));
+    console.log(`[db:backup] Pruned old backup: ${file}`);
+  }
+  console.log(`[db:backup] Retained ${retainCount} most recent backups, pruned ${toDelete.length}.`);
+}

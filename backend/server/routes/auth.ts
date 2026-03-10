@@ -12,6 +12,7 @@ import { validatePhone } from '../middleware/validation.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { logAudit } from '../utils/audit.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { getOrCreateDoctorVerification, mapCanonicalStatusToLegacy } from '../utils/doctorVerification.js';
 
 export const authRouter = Router();
 
@@ -135,6 +136,13 @@ authRouter.post('/login', rateLimit(10, 60000), asyncHandler(async (req: Request
       profile = await db.prepare('SELECT * FROM facility_accounts WHERE user_id = ?').get(user.id);
     }
 
+    // C1 fix: Return canonical verification status for doctors
+    let verificationStatus = user.verification_status;
+    if (user.role === 'doctor') {
+      const dv = await getOrCreateDoctorVerification(user.id);
+      verificationStatus = mapCanonicalStatusToLegacy(dv.current_status);
+    }
+
     await logAudit({ userId: user.id, action: 'login', entityType: 'user', entityId: user.id });
 
     res.json({
@@ -143,7 +151,7 @@ authRouter.post('/login', rateLimit(10, 60000), asyncHandler(async (req: Request
         phone: user.phone,
         role: user.role,
         status: user.status,
-        verificationStatus: user.verification_status,
+        verificationStatus,
         avatarUrl: user.avatar_url || null,
         profile,
       },
@@ -271,6 +279,12 @@ authRouter.get('/me', authMiddleware, asyncHandler(async (req: AuthRequest, res:
         LEFT JOIN cities c ON fa.city_id = c.id
         WHERE fa.user_id = ?
       `).get(user.id);
+    }
+
+    // C1 fix: Return canonical verification status for doctors
+    if (user.role === 'doctor') {
+      const dv = await getOrCreateDoctorVerification(user.id);
+      user.verification_status = mapCanonicalStatusToLegacy(dv.current_status);
     }
 
     res.json({ ...user, profile });

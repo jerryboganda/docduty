@@ -111,3 +111,36 @@ jobs:
 
       - name: Mobile tests
         run: flutter test
+
+  # ── Docker image build verification ─────────────────────────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [backend, website, mobile]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/api.Dockerfile
+          push: false
+          tags: docduty-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Portal image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/ops/Dockerfile.portal
+          push: false
+          tags: docduty-portal:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

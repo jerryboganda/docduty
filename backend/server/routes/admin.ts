@@ -48,7 +48,7 @@ adminRouter.get(
     const db = getDb();
 
     const pendingVerifications = await db.prepare<CountRow>(
-      "SELECT COUNT(*)::int AS c FROM users WHERE verification_status = 'pending_review'",
+      "SELECT COUNT(*)::int AS c FROM doctor_verifications WHERE current_status IN ('SUBMITTED', 'UNDER_REVIEW')",
     ).get();
     const openDisputes = await db.prepare<CountRow>(
       "SELECT COUNT(*)::int AS c FROM disputes WHERE status IN ('open', 'under_review')",
@@ -61,13 +61,13 @@ adminRouter.get(
     ).get();
 
     const recentVerifications = await db.prepare(`
-      SELECT u.id, u.phone, u.role, u.verification_status, u.created_at,
-        dp.full_name, fa.name AS facility_name
-      FROM users u
-      LEFT JOIN doctor_profiles dp ON dp.user_id = u.id
-      LEFT JOIN facility_accounts fa ON fa.user_id = u.id
-      WHERE u.verification_status = 'pending_review'
-      ORDER BY u.created_at DESC
+      SELECT dv.id, dv.doctor_user_id, dv.current_status, dv.submitted_at, dv.created_at,
+        u.phone, u.role, dp.full_name
+      FROM doctor_verifications dv
+      JOIN users u ON u.id = dv.doctor_user_id
+      LEFT JOIN doctor_profiles dp ON dp.user_id = dv.doctor_user_id
+      WHERE dv.current_status IN ('SUBMITTED', 'UNDER_REVIEW')
+      ORDER BY dv.submitted_at DESC NULLS LAST, dv.created_at DESC
       LIMIT 5
     `).all();
 

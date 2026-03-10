@@ -392,6 +392,15 @@ attendanceRouter.post(
     const eventId = uuidv4();
 
     await db.transaction(async () => {
+      // C3 fix: Validate current booking status before admin override
+      const booking = await db.prepare<any>(
+        'SELECT b.*, s.id AS shift_id FROM bookings b JOIN shifts s ON b.shift_id = s.id WHERE b.id = ? FOR UPDATE'
+      ).get(bookingId);
+
+      if (!booking) {
+        throw new Error('Booking not found');
+      }
+
       await db.prepare(`
         INSERT INTO attendance_events (
           id, booking_id, user_id, event_type, geo_valid, qr_valid,
@@ -401,21 +410,38 @@ attendanceRouter.post(
       `).run(eventId, bookingId, req.user!.userId, eventType, req.user!.userId, reason);
 
       if (eventType === 'check_in') {
+        if (booking.status !== 'confirmed') {
+          throw new Error(`Cannot check-in booking in '${booking.status}' status (must be 'confirmed')`);
+        }
         await db.prepare(`
           UPDATE bookings
           SET status = 'in_progress', check_in_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(bookingId);
+
+        await db.prepare(`
+          UPDATE shifts
+          SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(booking.shift_id);
       } else if (eventType === 'check_out') {
-        const booking = await db.prepare<any>('SELECT * FROM bookings WHERE id = ?').get(bookingId);
+        if (!['in_progress', 'confirmed'].includes(booking.status)) {
+          throw new Error(`Cannot check-out booking in '${booking.status}' status (must be 'in_progress' or 'confirmed')`);
+        }
         await db.prepare(`
           UPDATE bookings
           SET status = 'completed', check_out_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(bookingId);
-        if (booking) {
-          await processSettlement(booking);
-        }
+
+        // C3 fix: Also update shift status (was missing)
+        await db.prepare(`
+          UPDATE shifts
+          SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(booking.shift_id);
+
+        await processSettlement(booking);
       }
 
       await logAudit({

@@ -11,7 +11,7 @@ COPY backend ./backend
 COPY web-app ./web-app
 RUN ln -s /app/backend/node_modules /app/web-app/node_modules
 
-ARG VITE_API_URL=https://api.docduty.com.pk/api
+ARG VITE_API_URL=/api
 ENV VITE_API_URL=${VITE_API_URL}
 
 RUN npm --prefix backend run build

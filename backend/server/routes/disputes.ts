@@ -66,7 +66,7 @@ disputesRouter.post(
         VALUES (?, ?, ?, ?, ?, ?, 'open')
       `).run(disputeId, bookingId, req.user!.userId, raisedAgainst, type, description);
 
-      if (['in_progress', 'completed'].includes(booking.status)) {
+      if (['in_progress', 'completed', 'no_show'].includes(booking.status)) {
         await db.prepare("UPDATE bookings SET status = 'disputed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(bookingId);
       }
 

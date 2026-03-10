@@ -1,0 +1,43 @@
+# DocDuty Staging Environment
+# Usage: docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+#
+# Prerequisites:
+#   1. Copy ../.env.local to ../.env.staging and adjust values
+#   2. Ensure the npm_proxy network exists (or remove if not using Nginx Proxy Manager)
+
+services:
+  docduty-postgres:
+    container_name: docduty-staging-postgres
+    environment:
+      POSTGRES_DB: docduty_staging
+    volumes:
+      - docduty-staging-postgres-data:/var/lib/postgresql/data
+
+  docduty-api:
+    container_name: docduty-staging-api
+    env_file:
+      - ../.env.staging
+    environment:
+      NODE_ENV: staging
+      DATABASE_URL: postgresql://${POSTGRES_USER:-docduty}:${POSTGRES_PASSWORD:-docduty}@docduty-postgres:5432/docduty_staging
+      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_USER:-docduty}:${POSTGRES_PASSWORD:-docduty}@docduty-postgres:5432/docduty_staging
+      SEED_REFERENCE_DATA: "true"
+      SEED_DEMO_DATA: "true"
+
+  docduty-worker:
+    container_name: docduty-staging-worker
+    env_file:
+      - ../.env.staging
+    environment:
+      NODE_ENV: staging
+      DATABASE_URL: postgresql://${POSTGRES_USER:-docduty}:${POSTGRES_PASSWORD:-docduty}@docduty-postgres:5432/docduty_staging
+      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_USER:-docduty}:${POSTGRES_PASSWORD:-docduty}@docduty-postgres:5432/docduty_staging
+
+  docduty-portal:
+    container_name: docduty-staging-portal
+
+  docduty-marketing:
+    container_name: docduty-staging-marketing
+
+volumes:
+  docduty-staging-postgres-data:

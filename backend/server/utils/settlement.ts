@@ -12,11 +12,16 @@ export async function processSettlement(booking: any): Promise<{ success: boolea
   try {
     const db = getDb();
 
-    if (booking.settled_at) {
-      return { success: false, error: 'Already settled' };
-    }
-
     const result = await db.transaction(async () => {
+      // C2 fix: Atomic idempotency check with row-level lock inside transaction
+      const locked = await db.prepare(
+        'SELECT settled_at FROM bookings WHERE id = ? FOR UPDATE'
+      ).get(booking.id) as any;
+
+      if (locked?.settled_at) {
+        return false; // Already settled
+      }
+
       await db.prepare("UPDATE bookings SET settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .run(booking.id);
 

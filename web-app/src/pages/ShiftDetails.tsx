@@ -7,6 +7,7 @@ import {
   MessageSquare, FileText, ChevronRight, RefreshCw
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { SHIFT_STATUS_LABEL } from '../lib/statusMaps';
 
 interface ShiftData {
   id: string;
@@ -23,11 +24,7 @@ interface ShiftData {
   offers: any[];
 }
 
-const STATUS_DISPLAY: Record<string, string> = {
-  draft: 'Draft', open: 'Open', dispatching: 'In Dispatch',
-  booked: 'Booked', in_progress: 'In Progress', completed: 'Completed',
-  cancelled: 'Cancelled', expired: 'Expired',
-};
+const STATUS_DISPLAY = SHIFT_STATUS_LABEL;
 
 export default function ShiftDetails() {
   const { id } = useParams();
