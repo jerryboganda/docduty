@@ -15,6 +15,7 @@ import { useDoctorVerification } from '../../hooks/useDoctorVerification';
 
 type ViewState = 'loading' | 'error' | 'success';
 type Step = 1 | 2 | 3 | 4 | 5;
+type VerificationModalMode = 'edit' | 'readOnly';
 
 const DOCS = [
   { type: 'pmdc_certificate', label: 'PMDC certificate', optional: false },
@@ -163,6 +164,43 @@ export default function DoctorProfile() {
     return Boolean(specialty) && !['general physician', 'mbbs doctor', 'medical officer', 'er physician'].includes(specialty);
   }, [draft]);
   const visibleDocs = useMemo(() => DOCS.filter((doc) => !doc.optional || requiresPostgraduateDocument), [requiresPostgraduateDocument]);
+  const modalMode: VerificationModalMode = summary?.canEditVerification ? 'edit' : 'readOnly';
+  const isReadOnly = modalMode === 'readOnly';
+  const reviewData = useMemo(() => {
+    if (isReadOnly && summary?.submittedSnapshot) {
+      return {
+        ...emptyDraft,
+        ...summary.submittedSnapshot,
+        personalIdentity: { ...emptyDraft.personalIdentity, ...(summary.submittedSnapshot.personalIdentity || {}) },
+        professionalPractice: { ...emptyDraft.professionalPractice, ...(summary.submittedSnapshot.professionalPractice || {}) },
+        education: { ...emptyDraft.education, ...(summary.submittedSnapshot.education || {}) },
+        declaration: { ...emptyDraft.declaration, ...(summary.submittedSnapshot.declaration || {}) },
+      };
+    }
+
+    return draft;
+  }, [draft, isReadOnly, summary?.submittedSnapshot]);
+  const lockedVerificationMessage = useMemo(() => {
+    switch (summary?.status) {
+      case 'SUBMITTED':
+        return 'Your verification has already been submitted and is now read-only.';
+      case 'UNDER_REVIEW':
+        return 'Your verification is under review and cannot be changed right now.';
+      case 'APPROVED':
+        return 'Your doctor account is already verified. Documents cannot be changed unless reverification is requested.';
+      case 'REJECTED':
+        return 'This verification record is closed. Contact support if you need it reopened.';
+      default:
+        return 'This verification record is read-only in the current state.';
+    }
+  }, [summary?.status]);
+  const verificationCtaLabel = useMemo(() => {
+    if (!summary) return 'Start Verification';
+    if (summary.canEditVerification) return summary.primaryCta || 'Start Verification';
+    if (summary.status === 'APPROVED') return 'View Verification';
+    if (summary.status === 'REJECTED') return 'View Status';
+    return 'View Submission';
+  }, [summary]);
 
   const banner = !summary ? ['bg-slate-50 border-slate-200 text-slate-800', <Clock key="i" className="w-5 h-5 text-slate-500 mt-0.5" />] :
     summary.status === 'APPROVED' ? ['bg-emerald-50 border-emerald-200 text-emerald-800', <CheckCircle key="i" className="w-5 h-5 text-emerald-600 mt-0.5" />] :
@@ -171,16 +209,33 @@ export default function DoctorProfile() {
 
   const directionRef = useRef(0);
   const stepCompletion = useMemo(() => ({
-    1: isStepComplete(1, draft, docMap, user?.avatarUrl),
-    2: isStepComplete(2, draft, docMap, user?.avatarUrl),
-    3: isStepComplete(3, draft, docMap, user?.avatarUrl),
-    4: isStepComplete(4, draft, docMap, user?.avatarUrl),
-    5: isStepComplete(5, draft, docMap, user?.avatarUrl),
-  } as Record<Step, boolean>), [draft, docMap, user?.avatarUrl]);
+    1: isStepComplete(1, reviewData, docMap, user?.avatarUrl),
+    2: isStepComplete(2, reviewData, docMap, user?.avatarUrl),
+    3: isStepComplete(3, reviewData, docMap, user?.avatarUrl),
+    4: isStepComplete(4, reviewData, docMap, user?.avatarUrl),
+    5: isStepComplete(5, reviewData, docMap, user?.avatarUrl),
+  } as Record<Step, boolean>), [reviewData, docMap, user?.avatarUrl]);
 
-  const updateDraft = (section: string, field: string, value: any) => setDraft((current: any) => ({ ...current, [section]: { ...current[section], [field]: value } }));
+  const openVerificationModal = () => {
+    setStep(Number(reviewData?.step || 1) as Step);
+    setWizardOpen(true);
+  };
+
+  const setStepOnly = (nextStep: Step) => {
+    directionRef.current = nextStep > step ? 1 : -1;
+    setStep(nextStep);
+  };
+
+  const updateDraft = (section: string, field: string, value: any) => {
+    if (isReadOnly) return;
+    setDraft((current: any) => ({ ...current, [section]: { ...current[section], [field]: value } }));
+  };
 
   const saveDraft = async (nextStep: Step = step) => {
+    if (!summary?.canEditVerification) {
+      toast.error('Verification Locked', lockedVerificationMessage);
+      return;
+    }
     const payload = { ...draft, step: String(nextStep) };
     setDraft(payload);
     setStep(nextStep);
@@ -189,6 +244,10 @@ export default function DoctorProfile() {
   };
 
   const goToStep = (nextStep: Step) => {
+    if (isReadOnly) {
+      setStepOnly(nextStep);
+      return;
+    }
     directionRef.current = nextStep > step ? 1 : -1;
     void saveDraft(nextStep);
   };
@@ -209,6 +268,10 @@ export default function DoctorProfile() {
   };
 
   const submit = async () => {
+    if (!summary?.canEditVerification) {
+      toast.error('Verification Locked', lockedVerificationMessage);
+      return;
+    }
     try {
       setSubmitting(true);
       await saveDraft(step);
@@ -228,6 +291,11 @@ export default function DoctorProfile() {
   const uploadDoc = async (type: string, event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (!summary?.canSubmitDocuments) {
+      toast.error('Verification Locked', lockedVerificationMessage);
+      event.target.value = '';
+      return;
+    }
     const formData = new FormData();
     formData.append('document', file);
     formData.append('documentType', type);
@@ -254,7 +322,7 @@ export default function DoctorProfile() {
     <div className="space-y-5 pb-8 max-w-5xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div><h1 className="text-xl font-bold text-slate-900">Profile & Verification</h1><p className="text-sm text-slate-500">Manage your doctor profile and activation status.</p></div>
-        <button onClick={() => setWizardOpen(true)} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700">{summary?.primaryCta || 'Start Verification'}</button>
+        <button onClick={openVerificationModal} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700">{verificationCtaLabel}</button>
       </div>
 
       <div className={`rounded-2xl p-5 flex items-start gap-3 border ${banner[0]}`}>{banner[1]}<div className="flex-1"><div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1"><p className="font-semibold text-sm">{summary?.title || 'Verification Required'}</p><span className="text-xs font-bold uppercase tracking-[0.18em] opacity-80">{summary?.badge || 'Verification Required'}</span></div><p className="text-sm mt-1">{summary?.description}</p>{!summary?.canApply && <p className="text-xs mt-3 font-medium">{summary?.blockingReason}</p>}</div></div>
@@ -277,7 +345,7 @@ export default function DoctorProfile() {
         </div>
 
         <div className="space-y-5">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6"><h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Shield className="w-5 h-5 text-slate-400" /> Verification Status</h2><div className="mt-5 space-y-3"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Current state</p><p className="mt-2 text-2xl font-bold text-slate-900">{summary?.badge || 'Verification Required'}</p><p className="mt-2 text-sm text-slate-600">{summary?.description}</p></div>{summary?.reviewerNote && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-amber-700">Reviewer note</p><p className="mt-2 text-sm text-amber-900">{summary.reviewerNote}</p></div>}<button onClick={() => setWizardOpen(true)} className="w-full rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700">{summary?.primaryCta || 'Start Verification'}</button></div></div>
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6"><h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Shield className="w-5 h-5 text-slate-400" /> Verification Status</h2><div className="mt-5 space-y-3"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Current state</p><p className="mt-2 text-2xl font-bold text-slate-900">{summary?.badge || 'Verification Required'}</p><p className="mt-2 text-sm text-slate-600">{summary?.description}</p></div>{summary?.reviewerNote && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-amber-700">Reviewer note</p><p className="mt-2 text-sm text-amber-900">{summary.reviewerNote}</p></div>}<button onClick={openVerificationModal} className="w-full rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700">{verificationCtaLabel}</button></div></div>
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6"><h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><FileText className="w-5 h-5 text-slate-400" /> Required Documents</h2><div className="mt-5 space-y-3">{visibleDocs.map(({ type, label, optional }) => { const present = !!docMap.get(type) || (type === 'profile_photo' && !!user?.avatarUrl); return <div key={type} className="rounded-2xl border border-slate-200 p-4 flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-slate-900">{label}</p><p className="text-xs text-slate-500">{optional ? 'Required only for specialist verification claims' : 'Required for verification review'}</p></div><span className={`text-xs font-bold uppercase tracking-[0.16em] ${present ? 'text-emerald-700' : 'text-slate-400'}`}>{present ? 'Uploaded' : optional ? 'Optional' : 'Missing'}</span></div>; })}</div></div>
         </div>
       </div>
@@ -319,11 +387,26 @@ export default function DoctorProfile() {
                   );
                 })}
               </div>
-              <p className="sm:hidden text-[11px] font-bold text-emerald-700 text-center mt-2">{STEP_META[step - 1].label} — {STEP_META[step - 1].description}</p>
+              <p className="sm:hidden text-[11px] font-bold text-emerald-700 text-center mt-2">{STEP_META[step - 1].label} - {STEP_META[step - 1].description}</p>
             </div>
 
             {/* Step Content */}
             <div className="flex-1 overflow-y-auto px-6 py-5">
+              {isReadOnly && (
+                <div className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Verification record</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{summary?.badge || 'Verification Status'}</p>
+                      <p className="mt-1 text-sm text-slate-600">{lockedVerificationMessage}</p>
+                    </div>
+                    <div className="text-xs text-slate-500 sm:text-right">
+                      {summary?.submittedAt && <p>Submitted: {new Date(summary.submittedAt).toLocaleString()}</p>}
+                      {summary?.approvedAt && <p>Approved: {new Date(summary.approvedAt).toLocaleString()}</p>}
+                    </div>
+                  </div>
+                </div>
+              )}
               <AnimatePresence mode="wait" custom={directionRef.current}>
                 <motion.div key={step} custom={directionRef.current} initial={{ x: directionRef.current >= 0 ? 50 : -50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: directionRef.current >= 0 ? -50 : 50, opacity: 0 }} transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}>
 
@@ -333,33 +416,33 @@ export default function DoctorProfile() {
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <User className="w-4 h-4 text-slate-400" /> Legal Full Name
-                          {draft.personalIdentity.legalFullName ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.personalIdentity.legalFullName ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.personalIdentity.legalFullName || ''} onChange={(e) => updateDraft('personalIdentity', 'legalFullName', e.target.value)} placeholder="Dr. Muhammad Ali Khan" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.personalIdentity.legalFullName || ''} onChange={(e) => updateDraft('personalIdentity', 'legalFullName', e.target.value)} disabled={isReadOnly} placeholder="Dr. Muhammad Ali Khan" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">As it appears on your PMDC registration</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Calendar className="w-4 h-4 text-slate-400" /> Date of Birth
-                          {draft.personalIdentity.dateOfBirth ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.personalIdentity.dateOfBirth ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input type="date" value={draft.personalIdentity.dateOfBirth || ''} onChange={(e) => updateDraft('personalIdentity', 'dateOfBirth', e.target.value)} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input type="date" value={reviewData.personalIdentity.dateOfBirth || ''} onChange={(e) => updateDraft('personalIdentity', 'dateOfBirth', e.target.value)} disabled={isReadOnly} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Used for identity verification only</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <CreditCard className="w-4 h-4 text-slate-400" /> CNIC Number
-                          {draft.personalIdentity.cnicNumber ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.personalIdentity.cnicNumber ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.personalIdentity.cnicNumber || ''} onChange={(e) => updateDraft('personalIdentity', 'cnicNumber', e.target.value)} placeholder="3410499475845" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.personalIdentity.cnicNumber || ''} onChange={(e) => updateDraft('personalIdentity', 'cnicNumber', e.target.value)} disabled={isReadOnly} placeholder="3410499475845" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">13-digit CNIC without dashes</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Mail className="w-4 h-4 text-slate-400" /> Email Address
-                          {draft.personalIdentity.email ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.personalIdentity.email ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input type="email" value={draft.personalIdentity.email || ''} onChange={(e) => updateDraft('personalIdentity', 'email', e.target.value)} placeholder="doctor@example.com" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input type="email" value={reviewData.personalIdentity.email || ''} onChange={(e) => updateDraft('personalIdentity', 'email', e.target.value)} disabled={isReadOnly} placeholder="doctor@example.com" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">For verification correspondence</p>
                       </motion.div>
                     </motion.div>
@@ -371,45 +454,45 @@ export default function DoctorProfile() {
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Briefcase className="w-4 h-4 text-slate-400" /> Current Designation
-                          {draft.professionalPractice.currentDesignation ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.professionalPractice.currentDesignation ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.professionalPractice.currentDesignation || ''} onChange={(e) => updateDraft('professionalPractice', 'currentDesignation', e.target.value)} placeholder="Medical Officer" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.professionalPractice.currentDesignation || ''} onChange={(e) => updateDraft('professionalPractice', 'currentDesignation', e.target.value)} disabled={isReadOnly} placeholder="Medical Officer" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Your current professional title</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Stethoscope className="w-4 h-4 text-slate-400" /> Primary Specialty
-                          {draft.professionalPractice.primarySpecialty ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.professionalPractice.primarySpecialty ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.professionalPractice.primarySpecialty || ''} onChange={(e) => updateDraft('professionalPractice', 'primarySpecialty', e.target.value)} placeholder="General Physician" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.professionalPractice.primarySpecialty || ''} onChange={(e) => updateDraft('professionalPractice', 'primarySpecialty', e.target.value)} disabled={isReadOnly} placeholder="General Physician" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Primary area of medical practice</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Hash className="w-4 h-4 text-slate-400" /> PMDC Registration #
-                          {draft.professionalPractice.pmdcRegistrationNumber ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.professionalPractice.pmdcRegistrationNumber ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.professionalPractice.pmdcRegistrationNumber || ''} onChange={(e) => updateDraft('professionalPractice', 'pmdcRegistrationNumber', e.target.value)} placeholder="12345-P" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.professionalPractice.pmdcRegistrationNumber || ''} onChange={(e) => updateDraft('professionalPractice', 'pmdcRegistrationNumber', e.target.value)} disabled={isReadOnly} placeholder="12345-P" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Pakistan Medical & Dental Council registration</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <MapPin className="w-4 h-4 text-slate-400" /> Current Practice City
-                          {draft.professionalPractice.currentPracticeCity ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.professionalPractice.currentPracticeCity ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.professionalPractice.currentPracticeCity || ''} onChange={(e) => updateDraft('professionalPractice', 'currentPracticeCity', e.target.value)} placeholder="Islamabad" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.professionalPractice.currentPracticeCity || ''} onChange={(e) => updateDraft('professionalPractice', 'currentPracticeCity', e.target.value)} disabled={isReadOnly} placeholder="Islamabad" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">City where you currently practice</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="md:col-span-2 space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <MapPin className="w-4 h-4 text-slate-400" /> Preferred Work Cities
-                          {(draft.professionalPractice.preferredWorkCities || []).length > 0 ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {(reviewData.professionalPractice.preferredWorkCities || []).length > 0 ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={(draft.professionalPractice.preferredWorkCities || []).join(', ')} onChange={(e) => updateDraft('professionalPractice', 'preferredWorkCities', e.target.value.split(',').map((v: string) => v.trim()).filter(Boolean))} placeholder="Islamabad, Rawalpindi, Lahore" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={(reviewData.professionalPractice.preferredWorkCities || []).join(', ')} onChange={(e) => updateDraft('professionalPractice', 'preferredWorkCities', e.target.value.split(',').map((v: string) => v.trim()).filter(Boolean))} disabled={isReadOnly} placeholder="Islamabad, Rawalpindi, Lahore" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Comma-separated list of cities</p>
-                        {(draft.professionalPractice.preferredWorkCities || []).length > 0 && (
+                        {(reviewData.professionalPractice.preferredWorkCities || []).length > 0 && (
                           <div className="flex flex-wrap gap-1.5 pt-1">
-                            {draft.professionalPractice.preferredWorkCities.map((city: string) => (
+                            {reviewData.professionalPractice.preferredWorkCities.map((city: string) => (
                               <span key={city} className="inline-flex items-center rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700">{city}</span>
                             ))}
                           </div>
@@ -424,25 +507,25 @@ export default function DoctorProfile() {
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Building2 className="w-4 h-4 text-slate-400" /> MBBS Institution
-                          {draft.education.mbbsInstitution ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.education.mbbsInstitution ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input value={draft.education.mbbsInstitution || ''} onChange={(e) => updateDraft('education', 'mbbsInstitution', e.target.value)} placeholder="King Edward Medical University" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.education.mbbsInstitution || ''} onChange={(e) => updateDraft('education', 'mbbsInstitution', e.target.value)} disabled={isReadOnly} placeholder="King Edward Medical University" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Medical college where you completed MBBS</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Calendar className="w-4 h-4 text-slate-400" /> Graduation Year
-                          {draft.education.mbbsGraduationYear ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.education.mbbsGraduationYear ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <input type="number" value={draft.education.mbbsGraduationYear || ''} onChange={(e) => updateDraft('education', 'mbbsGraduationYear', e.target.value)} placeholder="2020" min="1970" max="2030" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input type="number" value={reviewData.education.mbbsGraduationYear || ''} onChange={(e) => updateDraft('education', 'mbbsGraduationYear', e.target.value)} disabled={isReadOnly} placeholder="2020" min="1970" max="2030" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Year of MBBS degree completion</p>
                       </motion.div>
                       <motion.div variants={fieldVariants} className="space-y-1.5">
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <ClipboardCheck className="w-4 h-4 text-slate-400" /> House Job Status
-                          {draft.education.houseJobStatus ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
+                          {reviewData.education.houseJobStatus ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 ml-auto" /> : <span className="w-1.5 h-1.5 rounded-full bg-amber-400 ml-auto shrink-0" />}
                         </label>
-                        <select value={draft.education.houseJobStatus || ''} onChange={(e) => updateDraft('education', 'houseJobStatus', e.target.value)} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none appearance-none bg-white">
+                        <select value={reviewData.education.houseJobStatus || ''} onChange={(e) => updateDraft('education', 'houseJobStatus', e.target.value)} disabled={isReadOnly} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none appearance-none bg-white disabled:bg-slate-50 disabled:text-slate-500">
                           <option value="">Select status</option>
                           {HOUSE_JOB_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                         </select>
@@ -452,7 +535,7 @@ export default function DoctorProfile() {
                         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
                           <Award className="w-4 h-4 text-slate-400" /> Postgraduate Qualification
                         </label>
-                        <input value={draft.education.postgraduateQualification || ''} onChange={(e) => updateDraft('education', 'postgraduateQualification', e.target.value)} placeholder="FCPS, MRCP, etc. (optional)" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none" />
+                        <input value={reviewData.education.postgraduateQualification || ''} onChange={(e) => updateDraft('education', 'postgraduateQualification', e.target.value)} disabled={isReadOnly} placeholder="FCPS, MRCP, etc. (optional)" className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all outline-none disabled:bg-slate-50 disabled:text-slate-500" />
                         <p className="text-[11px] text-slate-400">Leave blank if not applicable</p>
                       </motion.div>
                     </motion.div>
@@ -466,7 +549,7 @@ export default function DoctorProfile() {
                         const present = !!existing || (type === 'profile_photo' && !!user?.avatarUrl);
                         const DocIcon = DOC_ICONS[type] || FileText;
                         return (
-                          <motion.label key={type} variants={fieldVariants} className={`rounded-2xl border-2 p-5 cursor-pointer transition-all duration-300 group ${
+                          <motion.div key={type} variants={fieldVariants} className={`rounded-2xl border-2 p-5 transition-all duration-300 group ${
                             uploading === type ? 'border-emerald-300 bg-emerald-50/50' :
                             present ? 'border-emerald-200 bg-emerald-50/30 hover:border-emerald-300' :
                             'border-dashed border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/20'
@@ -485,17 +568,30 @@ export default function DoctorProfile() {
                                     present ? 'bg-emerald-100 text-emerald-700' :
                                     optional ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'
                                   }`}>
-                                    {uploading === type ? 'Uploading…' : present ? '✓ Uploaded' : optional ? 'Optional' : 'Required'}
+                                    {uploading === type ? 'Uploading...' : present ? 'Uploaded' : optional ? 'Optional' : 'Required'}
                                   </span>
                                 </div>
-                                <p className="text-[11px] text-slate-500 mt-1.5">{present ? (existing?.file_name || 'Available from avatar') : optional ? 'Required for specialist claims only' : 'PDF, JPG, PNG, or WEBP — max 5 MB'}</p>
+                                <p className="text-[11px] text-slate-500 mt-1.5">{present ? (existing?.file_name || 'Available from avatar') : optional ? 'Required for specialist claims only' : 'PDF, JPG, PNG, or WEBP - max 5 MB'}</p>
                               </div>
                             </div>
-                            <div className={`mt-3 flex items-center gap-2 text-sm font-medium transition-colors ${present ? 'text-emerald-600' : 'text-slate-400 group-hover:text-emerald-600'}`}>
-                              <UploadCloud className="w-4 h-4" /> {present ? 'Replace document' : 'Upload document'}
-                            </div>
-                            <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" className="hidden" onChange={(event) => void uploadDoc(type, event)} />
-                          </motion.label>
+                            {isReadOnly ? (
+                              <div className="mt-3 flex flex-wrap items-center gap-3">
+                                <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
+                                  <Eye className="w-4 h-4" /> {present ? 'View-only record' : 'No document uploaded'}
+                                </div>
+                                {existing?.file_url && (
+                                  <a href={existing.file_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-700 hover:text-emerald-800">
+                                    <FileText className="w-4 h-4" /> Open file
+                                  </a>
+                                )}
+                              </div>
+                            ) : (
+                              <label className={`mt-3 flex items-center gap-2 text-sm font-medium transition-colors cursor-pointer ${present ? 'text-emerald-600' : 'text-slate-400 group-hover:text-emerald-600'}`}>
+                                <UploadCloud className="w-4 h-4" /> {present ? 'Replace document' : 'Upload document'}
+                                <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" className="hidden" onChange={(event) => void uploadDoc(type, event)} />
+                              </label>
+                            )}
+                          </motion.div>
                         );
                       })}
                     </motion.div>
@@ -515,7 +611,7 @@ export default function DoctorProfile() {
                               <button key={meta.id} onClick={() => goToStep(sNum)} className={`rounded-xl border p-3 text-center transition-colors hover:shadow-sm ${done ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
                                 <Icon className={`w-5 h-5 mx-auto ${done ? 'text-emerald-600' : 'text-amber-500'}`} />
                                 <p className="text-[11px] font-bold mt-1.5 text-slate-700">{meta.label}</p>
-                                <p className={`text-[10px] font-bold mt-0.5 ${done ? 'text-emerald-600' : 'text-amber-600'}`}>{done ? '✓ Complete' : 'Incomplete'}</p>
+                                <p className={`text-[10px] font-bold mt-0.5 ${done ? 'text-emerald-600' : 'text-amber-600'}`}>{done ? 'Complete' : 'Incomplete'}</p>
                               </button>
                             );
                           })}
@@ -524,34 +620,34 @@ export default function DoctorProfile() {
                       <motion.div variants={fieldVariants} className="rounded-2xl border border-slate-200 bg-slate-50 p-5 grid gap-4 md:grid-cols-2">
                         <div>
                           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Identity</p>
-                          <p className="mt-2 text-sm font-semibold text-slate-900">{draft.personalIdentity.legalFullName || 'Not provided'}</p>
-                          <p className="text-sm text-slate-600">{draft.personalIdentity.cnicNumber || 'CNIC missing'}</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-900">{reviewData.personalIdentity.legalFullName || 'Not provided'}</p>
+                          <p className="text-sm text-slate-600">{reviewData.personalIdentity.cnicNumber || 'CNIC missing'}</p>
                         </div>
                         <div>
                           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Professional</p>
-                          <p className="mt-2 text-sm font-semibold text-slate-900">{draft.professionalPractice.currentDesignation || 'Not provided'}</p>
-                          <p className="text-sm text-slate-600">{draft.professionalPractice.pmdcRegistrationNumber || 'PMDC missing'}</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-900">{reviewData.professionalPractice.currentDesignation || 'Not provided'}</p>
+                          <p className="text-sm text-slate-600">{reviewData.professionalPractice.pmdcRegistrationNumber || 'PMDC missing'}</p>
                         </div>
                       </motion.div>
                       <motion.div variants={fieldVariants}>
                         <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500 mb-3">Declaration</p>
                         <div className="space-y-3">
                           <label className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 hover:bg-slate-50 transition-colors cursor-pointer">
-                            <input type="checkbox" checked={!!draft.declaration.confirmsAccuracy} onChange={(e) => updateDraft('declaration', 'confirmsAccuracy', e.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                            <input type="checkbox" checked={!!reviewData.declaration.confirmsAccuracy} onChange={(e) => updateDraft('declaration', 'confirmsAccuracy', e.target.checked)} disabled={isReadOnly} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-70" />
                             <div className="flex-1">
                               <div className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-slate-400" /><span className="text-sm font-semibold text-slate-900">Accuracy Confirmation</span></div>
                               <p className="text-[11px] text-slate-500 mt-0.5">I confirm the information provided is accurate and complete.</p>
                             </div>
                           </label>
                           <label className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 hover:bg-slate-50 transition-colors cursor-pointer">
-                            <input type="checkbox" checked={!!draft.declaration.confirmsGenuineDocuments} onChange={(e) => updateDraft('declaration', 'confirmsGenuineDocuments', e.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                            <input type="checkbox" checked={!!reviewData.declaration.confirmsGenuineDocuments} onChange={(e) => updateDraft('declaration', 'confirmsGenuineDocuments', e.target.checked)} disabled={isReadOnly} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-70" />
                             <div className="flex-1">
                               <div className="flex items-center gap-2"><FileCheck2 className="w-4 h-4 text-slate-400" /><span className="text-sm font-semibold text-slate-900">Document Authenticity</span></div>
                               <p className="text-[11px] text-slate-500 mt-0.5">I confirm all uploaded documents are genuine and belong to me.</p>
                             </div>
                           </label>
                           <label className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 hover:bg-slate-50 transition-colors cursor-pointer">
-                            <input type="checkbox" checked={!!draft.declaration.consentsToReview} onChange={(e) => updateDraft('declaration', 'consentsToReview', e.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                            <input type="checkbox" checked={!!reviewData.declaration.consentsToReview} onChange={(e) => updateDraft('declaration', 'consentsToReview', e.target.checked)} disabled={isReadOnly} className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-70" />
                             <div className="flex-1">
                               <div className="flex items-center gap-2"><Eye className="w-4 h-4 text-slate-400" /><span className="text-sm font-semibold text-slate-900">Review Consent</span></div>
                               <p className="text-[11px] text-slate-500 mt-0.5">I consent to DocDuty reviewing my information and contacting me if needed.</p>
@@ -559,7 +655,7 @@ export default function DoctorProfile() {
                           </label>
                         </div>
                       </motion.div>
-                      {draft.declaration.confirmsAccuracy && draft.declaration.confirmsGenuineDocuments && draft.declaration.consentsToReview && !summary?.missingItems?.length && (
+                      {!isReadOnly && reviewData.declaration.confirmsAccuracy && reviewData.declaration.confirmsGenuineDocuments && reviewData.declaration.consentsToReview && !summary?.missingItems?.length && (
                         <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.4, ease: [0, 0, 0.2, 1] }} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-center">
                           <Sparkles className="w-8 h-8 text-emerald-600 mx-auto" />
                           <p className="mt-2 text-lg font-bold text-emerald-900">Ready to Submit!</p>
@@ -573,7 +669,7 @@ export default function DoctorProfile() {
               </AnimatePresence>
 
               {/* Outstanding Items */}
-              {summary?.missingItems?.length ? (
+              {!isReadOnly && summary?.missingItems?.length ? (
                 <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-amber-200 bg-amber-50/80 p-5 mt-5">
                   <div className="flex items-center gap-2 mb-3">
                     <AlertTriangle className="w-4 h-4 text-amber-600" />
@@ -615,15 +711,19 @@ export default function DoctorProfile() {
             {/* Sticky Footer */}
             <div className="border-t border-slate-200 bg-white px-6 py-4 shrink-0">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-slate-500">Step {step} of 5{summary?.missingItems?.length ? ` · ${summary.missingItems.length} item${summary.missingItems.length !== 1 ? 's' : ''} remaining` : ''}</p>
+                <p className="text-xs text-slate-500">Step {step} of 5{!isReadOnly && summary?.missingItems?.length ? ` - ${summary.missingItems.length} item${summary.missingItems.length !== 1 ? 's' : ''} remaining` : ''}</p>
                 <div className="flex gap-1">
                   {([1, 2, 3, 4, 5] as Step[]).map((s) => (
                     <div key={s} className={`w-8 h-1 rounded-full transition-all duration-300 ${s === step ? 'bg-emerald-500' : stepCompletion[s] ? 'bg-emerald-300' : 'bg-slate-200'}`} />
                   ))}
                 </div>
               </div>
-              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-                <button onClick={() => goToStep(step)} disabled={submitting} className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">Save Draft</button>
+              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between sm:items-center">
+                {isReadOnly ? (
+                  <div className="text-sm text-slate-500">{lockedVerificationMessage}</div>
+                ) : (
+                  <button onClick={() => goToStep(step)} disabled={submitting} className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors">Save Draft</button>
+                )}
                 <div className="flex gap-3">
                   {step > 1 && (
                     <button onClick={() => goToStep((step - 1) as Step)} className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2">
@@ -632,11 +732,15 @@ export default function DoctorProfile() {
                   )}
                   {step < 5 ? (
                     <button onClick={() => goToStep((step + 1) as Step)} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 transition-colors flex items-center gap-2">
-                      Continue <ArrowRight className="w-4 h-4" />
+                      {isReadOnly ? 'Next' : 'Continue'} <ArrowRight className="w-4 h-4" />
+                    </button>
+                  ) : isReadOnly ? (
+                    <button onClick={() => setWizardOpen(false)} className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800 transition-colors flex items-center gap-2">
+                      Close
                     </button>
                   ) : (
                     <button onClick={() => void submit()} disabled={submitting} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors flex items-center gap-2">
-                      {submitting ? <><RefreshCw className="w-4 h-4 animate-spin" /> Submitting…</> : <><Send className="w-4 h-4" /> Submit for Verification</>}
+                      {submitting ? <><RefreshCw className="w-4 h-4 animate-spin" /> Submitting...</> : <><Send className="w-4 h-4" /> Submit for Verification</>}
                     </button>
                   )}
                 </div>
@@ -649,3 +753,6 @@ export default function DoctorProfile() {
     </div>
   );
 }
+
+
+
