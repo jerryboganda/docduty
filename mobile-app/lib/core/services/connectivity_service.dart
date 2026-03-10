@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:io';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:docduty/core/services/internet_lookup.dart';
 
 /// Lightweight reachability check without relying on platform plugins.
 class ConnectivityService extends GetxService {
@@ -36,16 +34,7 @@ class ConnectivityService extends GetxService {
   }
 
   Future<bool> _hasInternetAccess() async {
-    if (kIsWeb) {
-      return true;
-    }
-
-    try {
-      final result = await InternetAddress.lookup('example.com');
-      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
-    } on SocketException {
-      return false;
-    }
+    return hasInternetAccess();
   }
 
   void _showOfflineBanner() {

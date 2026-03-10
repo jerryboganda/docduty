@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:docduty/widgets/custombutton.dart';
 import 'package:docduty/widgets/my_text_field.dart';
 import 'package:docduty/shared/widgets/widgets.dart';
@@ -23,87 +22,93 @@ class CompleteProfileView extends GetView<CompleteProfileController> {
           message: 'Updating profile...',
           child: SafeArea(
             child: SingleChildScrollView(
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: Get.width / 30),
-                child: Column(
-                  children: [
-                    SizedBox(height: Get.height / 25),
-                    Text(
-                      "Complete Your Profile",
-                      style: TextStyle(
-                        fontFamily: "Gilroy",
-                        fontSize: Get.height / 30,
-                        color: controller.notifier.text,
-                      ),
-                    ),
-                    SizedBox(height: Get.height / 80),
-                    Text(
-                      controller.userRole == 'doctor'
-                          ? "Add your medical qualifications"
-                          : "Set up your facility details",
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: "Gilroy",
-                        fontSize: Get.height / 65,
-                        color: Colors.grey,
-                      ),
-                    ),
-                    SizedBox(height: Get.height / 30),
-                    // ─── Avatar ──────────────────────────
-                    _buildAvatarPicker(context),
-                    SizedBox(height: Get.height / 30),
-                    // ─── Error ──────────────────────────
-                    Obx(() {
-                      if (controller.errorMessage.isEmpty) {
-                        return const SizedBox.shrink();
-                      }
-                      return Container(
-                        width: Get.width,
-                        margin: EdgeInsets.only(bottom: Get.height / 50),
-                        padding: EdgeInsets.all(Get.width / 30),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(Get.height / 80),
-                          border: Border.all(color: Colors.red.shade200),
-                        ),
-                        child: Text(
-                          controller.errorMessage,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: Get.width / 30),
+                    child: Column(
+                      children: [
+                        SizedBox(height: Get.height / 25),
+                        Text(
+                          "Complete Your Profile",
                           style: TextStyle(
                             fontFamily: "Gilroy",
-                            color: Colors.red.shade700,
-                            fontSize: Get.height / 60,
+                            fontSize: Get.height / 30,
+                            color: controller.notifier.text,
                           ),
                         ),
-                      );
-                    }),
-                    // ─── Name ───────────────────────────
-                    MyTextField(
-                      controller: controller.fullNameController,
-                      type: TextInputType.name,
-                      hintText: "Full Name",
-                      titletext: "Full Name",
+                        SizedBox(height: Get.height / 80),
+                        Text(
+                          controller.userRole == 'doctor'
+                              ? "Add your medical qualifications"
+                              : "Set up your facility details",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontFamily: "Gilroy",
+                            fontSize: Get.height / 65,
+                            color: Colors.grey,
+                          ),
+                        ),
+                        SizedBox(height: Get.height / 30),
+                        // ─── Avatar ──────────────────────────
+                        _buildAvatarPicker(context),
+                        SizedBox(height: Get.height / 30),
+                        // ─── Error ──────────────────────────
+                        Obx(() {
+                          if (controller.errorMessage.isEmpty) {
+                            return const SizedBox.shrink();
+                          }
+                          return Container(
+                            width: Get.width,
+                            margin: EdgeInsets.only(bottom: Get.height / 50),
+                            padding: EdgeInsets.all(Get.width / 30),
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius:
+                                  BorderRadius.circular(Get.height / 80),
+                              border: Border.all(color: Colors.red.shade200),
+                            ),
+                            child: Text(
+                              controller.errorMessage,
+                              style: TextStyle(
+                                fontFamily: "Gilroy",
+                                color: Colors.red.shade700,
+                                fontSize: Get.height / 60,
+                              ),
+                            ),
+                          );
+                        }),
+                        // ─── Name ───────────────────────────
+                        MyTextField(
+                          controller: controller.fullNameController,
+                          type: TextInputType.name,
+                          hintText: "Full Name",
+                          titletext: "Full Name",
+                        ),
+                        SizedBox(height: Get.height / 50),
+                        // ─── Role-specific ──────────────────
+                        if (controller.userRole == 'doctor')
+                          ..._buildDoctorFields(),
+                        if (controller.userRole == 'facility_admin')
+                          ..._buildFacilityFields(),
+                        SizedBox(height: Get.height / 30),
+                        // ─── Submit ─────────────────────────
+                        SizedBox(
+                          width: Get.width,
+                          height: Get.height / 17,
+                          child: CustomButton(
+                            text: "Complete Profile",
+                            radius: BorderRadius.circular(Get.height / 20),
+                            onPressed: () => controller.completeProfile(),
+                            color: const Color(0xFF0165FC),
+                            textcolor: const Color(0xFFFFFFFF),
+                          ),
+                        ),
+                        SizedBox(height: Get.height / 20),
+                      ],
                     ),
-                    SizedBox(height: Get.height / 50),
-                    // ─── Role-specific ──────────────────
-                    if (controller.userRole == 'doctor')
-                      ..._buildDoctorFields(),
-                    if (controller.userRole == 'facility_admin')
-                      ..._buildFacilityFields(),
-                    SizedBox(height: Get.height / 30),
-                    // ─── Submit ─────────────────────────
-                    SizedBox(
-                      width: Get.width,
-                      height: Get.height / 17,
-                      child: CustomButton(
-                        text: "Complete Profile",
-                        radius: BorderRadius.circular(Get.height / 20),
-                        onPressed: () => controller.completeProfile(),
-                        color: const Color(0xFF0165FC),
-                        textcolor: const Color(0xFFFFFFFF),
-                      ),
-                    ),
-                    SizedBox(height: Get.height / 20),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -118,7 +123,8 @@ class CompleteProfileView extends GetView<CompleteProfileController> {
       clipBehavior: Clip.none,
       children: [
         Obx(
-          () => controller.selectedImage == null
+          () => controller.selectedImage == null ||
+                  controller.selectedImageBytes == null
               ? Container(
                   padding: EdgeInsets.all(Get.height / 30),
                   height: Get.height / 6.5,
@@ -139,8 +145,8 @@ class CompleteProfileView extends GetView<CompleteProfileController> {
                   width: Get.height / 6.5,
                   decoration: const BoxDecoration(shape: BoxShape.circle),
                   child: ClipOval(
-                    child: Image.file(
-                      File(controller.selectedImage!.path),
+                    child: Image.memory(
+                      controller.selectedImageBytes!,
                       fit: BoxFit.cover,
                     ),
                   ),

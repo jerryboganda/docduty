@@ -10,6 +10,7 @@ import { getDb } from '../database/schema.js';
 import { isPgMemUrl } from '../database/pgmem.js';
 import { authMiddleware, AuthRequest, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../utils/audit.js';
+import { requireApprovedDoctorVerification } from '../utils/doctorVerification.js';
 import { processCancellationRefund } from '../utils/settlement.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
@@ -21,6 +22,7 @@ bookingsRouter.post('/accept', requireRole('doctor'), asyncHandler(async (req: A
     const db = getDb();
     const { shiftId, shift_id, offerId } = req.body;
     const resolvedShiftId = shiftId || shift_id;
+    await requireApprovedDoctorVerification(req.user!.userId);
 
     if (!resolvedShiftId) {
       res.status(400).json({ error: 'shiftId is required' });
@@ -105,7 +107,7 @@ bookingsRouter.post('/accept', requireRole('doctor'), asyncHandler(async (req: A
     });
   } catch (err: any) {
     console.error('[Bookings Accept]', err.message);
-    const statusCode = err.message.includes('not found') || err.message.includes('no longer') ? 409 : 500;
+    const statusCode = err.statusCode || (err.message.includes('not found') || err.message.includes('no longer') ? 409 : 500);
     res.status(statusCode).json({ error: err.message });
   }
 }));
@@ -116,6 +118,7 @@ bookingsRouter.post('/counter', requireRole('doctor'), asyncHandler(async (req: 
     const { shiftId, shift_id, counterAmountPkr, proposed_amount } = req.body;
     const resolvedShiftId = shiftId || shift_id;
     const amount = counterAmountPkr || proposed_amount;
+    await requireApprovedDoctorVerification(req.user!.userId);
 
     if (!resolvedShiftId || !amount) {
       res.status(400).json({ error: 'shiftId and counterAmountPkr are required' });
@@ -146,7 +149,7 @@ bookingsRouter.post('/counter', requireRole('doctor'), asyncHandler(async (req: 
     res.status(201).json({ offerId, message: 'Counter offer submitted' });
   } catch (err: any) {
     console.error('[Bookings Counter]', err.message);
-    res.status(500).json({ error: 'Failed to submit counter offer' });
+    res.status(err.statusCode || 500).json({ error: err.message || 'Failed to submit counter offer' });
   }
 }));
 

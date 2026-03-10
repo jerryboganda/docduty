@@ -9,6 +9,12 @@ import crypto from 'crypto';
 import { getDb } from '../database/schema.js';
 import { authMiddleware, type AuthRequest, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../utils/audit.js';
+import {
+  appendVerificationAuditLog,
+  getSummaryDescriptor,
+  syncLegacyUserVerificationStatus,
+  type DoctorVerificationStatus,
+} from '../utils/doctorVerification.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 type CountRow = { count?: number; c?: number; total?: number };
@@ -101,79 +107,394 @@ adminRouter.get(
   '/verifications',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const { status = 'pending_review' } = req.query;
+    const requestedStatus = String(req.query.status || 'SUBMITTED').toUpperCase();
+    const reviewerId = req.query.reviewerId ? String(req.query.reviewerId) : null;
+    const search = req.query.search ? `%${String(req.query.search).trim()}%` : null;
+    const city = req.query.city ? String(req.query.city) : null;
+    const specialty = req.query.specialty ? String(req.query.specialty) : null;
 
-    const users = await db.prepare(`
-      SELECT u.id, u.phone, u.role, u.verification_status, u.created_at,
-        dp.full_name, dp.cnic, dp.pmdc_license, dp.specialty_id, sp.name AS specialty_name,
-        fa.name AS facility_name, fa.registration_number
-      FROM users u
+    let where = `WHERE u.role = 'doctor'`;
+    const params: unknown[] = [];
+
+    if (requestedStatus !== 'ALL') {
+      where += ' AND dv.current_status = ?';
+      params.push(requestedStatus);
+    }
+    if (reviewerId) {
+      where += ' AND dv.reviewed_by = ?';
+      params.push(reviewerId);
+    }
+    if (search) {
+      where += ' AND (dp.full_name ILIKE ? OR u.phone ILIKE ? OR COALESCE(u.email, \'\') ILIKE ? OR COALESCE(dp.pmdc_license, \'\') ILIKE ?)';
+      params.push(search, search, search, search);
+    }
+    if (city) {
+      where += ' AND c.name = ?';
+      params.push(city);
+    }
+    if (specialty) {
+      where += ' AND sp.name = ?';
+      params.push(specialty);
+    }
+
+    const verifications = await db.prepare(`
+      SELECT
+        dv.id,
+        dv.current_status,
+        dv.submission_version,
+        dv.submitted_at,
+        dv.review_started_at,
+        dv.reviewed_at,
+        dv.approved_at,
+        dv.reviewed_by,
+        dv.user_visible_note,
+        dv.rejection_reason_code,
+        dv.rejection_reason_text,
+        dv.resubmission_reason_text,
+        dv.missing_items_json,
+        dv.flagged_items_json,
+        u.id AS user_id,
+        u.phone,
+        u.email,
+        u.created_at,
+        dp.full_name,
+        dp.cnic,
+        dp.pmdc_license,
+        dp.experience_years,
+        sp.name AS specialty_name,
+        c.name AS city_name
+      FROM doctor_verifications dv
+      JOIN users u ON u.id = dv.doctor_user_id
       LEFT JOIN doctor_profiles dp ON dp.user_id = u.id
-      LEFT JOIN specialties sp ON dp.specialty_id = sp.id
-      LEFT JOIN facility_accounts fa ON fa.user_id = u.id
-      WHERE u.verification_status = ?
-      ORDER BY u.created_at ASC
-    `).all(status);
+      LEFT JOIN specialties sp ON sp.id = dp.specialty_id
+      LEFT JOIN cities c ON c.id = dp.city_id
+      ${where}
+      ORDER BY COALESCE(dv.submitted_at, dv.updated_at) ASC
+    `).all(...params);
 
-    res.json({ users });
+    const data = verifications.map((verification: any) => ({
+      ...verification,
+      descriptor: getSummaryDescriptor(verification.current_status as DoctorVerificationStatus),
+    }));
+
+    res.json({ verifications: data });
   }),
 );
 
-adminRouter.put(
-  '/verifications/:userId',
+adminRouter.get(
+  '/verifications/metrics',
+  asyncHandler(async (_req: AuthRequest, res: Response): Promise<void> => {
+    const db = getDb();
+    const rows = await db.prepare<{ current_status: DoctorVerificationStatus; count: number }>(`
+      SELECT current_status, COUNT(*)::int AS count
+      FROM doctor_verifications
+      GROUP BY current_status
+    `).all();
+
+    res.json({
+      metrics: rows.reduce<Record<string, number>>((acc, row) => {
+        acc[row.current_status] = row.count;
+        return acc;
+      }, {}),
+    });
+  }),
+);
+
+adminRouter.get(
+  '/verifications/:verificationId',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const { decision, reason } = req.body;
+    const verification = await db.prepare<any>(`
+      SELECT
+        dv.*,
+        u.id AS user_id,
+        u.phone,
+        u.email,
+        u.avatar_url,
+        dp.full_name,
+        dp.cnic,
+        dp.pmdc_license,
+        dp.bio,
+        dp.experience_years,
+        sp.name AS specialty_name,
+        c.name AS city_name,
+        reviewer.phone AS reviewer_phone
+      FROM doctor_verifications dv
+      JOIN users u ON u.id = dv.doctor_user_id
+      LEFT JOIN doctor_profiles dp ON dp.user_id = u.id
+      LEFT JOIN specialties sp ON sp.id = dp.specialty_id
+      LEFT JOIN cities c ON c.id = dp.city_id
+      LEFT JOIN users reviewer ON reviewer.id = dv.reviewed_by
+      WHERE dv.id = ?
+    `).get(req.params.verificationId);
 
-    if (!['verified', 'rejected'].includes(decision)) {
-      res.status(400).json({ error: 'decision must be verified or rejected' });
+    if (!verification) {
+      res.status(404).json({ error: 'Verification record not found' });
       return;
     }
 
-    const user = await db.prepare<any>('SELECT * FROM users WHERE id = ?').get(req.params.userId);
-    if (!user) {
-      res.status(404).json({ error: 'User not found' });
+    const documents = await db.prepare(`
+      SELECT *
+      FROM doctor_verification_documents
+      WHERE verification_id = ?
+      ORDER BY uploaded_at DESC
+    `).all(verification.id);
+    const audit = await db.prepare(`
+      SELECT *
+      FROM doctor_verification_audit_logs
+      WHERE verification_id = ?
+      ORDER BY created_at DESC
+    `).all(verification.id);
+
+    res.json({
+      verification: {
+        ...verification,
+        descriptor: getSummaryDescriptor(verification.current_status as DoctorVerificationStatus),
+      },
+      documents,
+      audit,
+    });
+  }),
+);
+
+adminRouter.post(
+  '/verifications/:verificationId/claim',
+  asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
+    const db = getDb();
+    const verification = await db.prepare<any>('SELECT * FROM doctor_verifications WHERE id = ?').get(req.params.verificationId);
+    if (!verification) {
+      res.status(404).json({ error: 'Verification record not found' });
       return;
     }
 
-    const oldStatus = user.verification_status;
+    const updated = await db.prepare(`
+      UPDATE doctor_verifications
+      SET current_status = 'UNDER_REVIEW', review_started_at = CURRENT_TIMESTAMP, reviewed_by = ?
+      WHERE id = ?
+      RETURNING *
+    `).get(req.user!.userId, verification.id);
 
-    await db.transaction(async () => {
-      await db.prepare('UPDATE users SET verification_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(decision, user.id);
+    await syncLegacyUserVerificationStatus(updated.doctor_user_id, updated.current_status);
+    await appendVerificationAuditLog({
+      verificationId: verification.id,
+      actorUserId: req.user!.userId,
+      actorRole: req.user!.role,
+      eventType: 'review_claimed',
+      oldStatus: verification.current_status,
+      newStatus: updated.current_status,
+    });
 
-      if (user.role === 'facility_admin') {
-        await db.prepare(`
-          UPDATE facility_accounts
-          SET verification_status = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = ?
-        `).run(decision, user.id);
-      }
+    res.json({ message: 'Verification review claimed', verification: updated });
+  }),
+);
 
-      await db.prepare(`
-        INSERT INTO notifications (id, user_id, type, title, body, data)
-        VALUES (?, ?, 'verification_update', ?, ?, ?)
-      `).run(
-        uuidv4(),
-        user.id,
-        decision === 'verified' ? 'Verification Approved' : 'Verification Rejected',
-        decision === 'verified'
-          ? 'Your account has been verified. You can now use all features.'
-          : `Verification rejected: ${reason || 'Please re-submit documents.'}`,
-        { decision, reason: reason || null },
-      );
+async function completeVerificationReview(params: {
+  verificationId: string;
+  actorUserId: string;
+  actorRole: string;
+  newStatus: DoctorVerificationStatus;
+  userVisibleNote?: string | null;
+  internalNote?: string | null;
+  rejectionReasonCode?: string | null;
+  rejectionReasonText?: string | null;
+  resubmissionReasonText?: string | null;
+  flaggedItems?: Array<Record<string, unknown>>;
+}) {
+  const db = getDb();
+  const verification = await db.prepare<any>('SELECT * FROM doctor_verifications WHERE id = ?').get(params.verificationId);
+  if (!verification) {
+    throw new Error('Verification record not found');
+  }
 
-      await logAudit({
-        userId: req.user!.userId,
-        action: 'verify_user',
-        entityType: 'user',
-        entityId: user.id,
-        oldValue: { verification_status: oldStatus },
-        newValue: { verification_status: decision, reason },
-      });
-    })();
+  const updated = await db.prepare(`
+    UPDATE doctor_verifications
+    SET
+      current_status = ?,
+      reviewed_by = ?,
+      reviewed_at = CURRENT_TIMESTAMP,
+      approved_at = CASE WHEN ? = 'APPROVED' THEN CURRENT_TIMESTAMP ELSE NULL END,
+      rejection_reason_code = ?,
+      rejection_reason_text = ?,
+      resubmission_reason_text = ?,
+      user_visible_note = ?,
+      internal_note = ?,
+      flagged_items_json = ?,
+      missing_items_json = CASE
+        WHEN ? = 'RESUBMISSION_REQUIRED' THEN COALESCE(?, '[]'::jsonb)
+        ELSE '[]'::jsonb
+      END,
+      review_started_at = COALESCE(review_started_at, CURRENT_TIMESTAMP),
+      submission_version = CASE
+        WHEN ? = 'RESUBMISSION_REQUIRED' THEN submission_version + 1
+        ELSE submission_version
+      END,
+      resubmission_count = CASE
+        WHEN ? = 'RESUBMISSION_REQUIRED' THEN resubmission_count + 1
+        ELSE resubmission_count
+      END
+    WHERE id = ?
+    RETURNING *
+  `).get(
+    params.newStatus,
+    params.actorUserId,
+    params.newStatus,
+    params.rejectionReasonCode || null,
+    params.rejectionReasonText || null,
+    params.resubmissionReasonText || null,
+    params.userVisibleNote || null,
+    params.internalNote || null,
+    JSON.stringify(params.flaggedItems || []),
+    params.newStatus,
+    JSON.stringify(params.flaggedItems ? params.flaggedItems.map((item) => item.field || item.documentType || item.code) : []),
+    params.newStatus,
+    params.newStatus,
+    verification.id,
+  );
 
-    res.json({ message: `User ${decision}` });
+  await syncLegacyUserVerificationStatus(updated.doctor_user_id, updated.current_status);
+  await db.prepare(`
+    INSERT INTO notifications (id, user_id, type, title, body, data)
+    VALUES (?, ?, 'verification_update', ?, ?, ?)
+  `).run(
+    uuidv4(),
+    updated.doctor_user_id,
+    getSummaryDescriptor(updated.current_status).title,
+    params.userVisibleNote || getSummaryDescriptor(updated.current_status).description,
+    JSON.stringify({ verificationId: verification.id, status: updated.current_status }),
+  );
+
+  await appendVerificationAuditLog({
+    verificationId: verification.id,
+    actorUserId: params.actorUserId,
+    actorRole: params.actorRole,
+    eventType: 'review_completed',
+    oldStatus: verification.current_status,
+    newStatus: updated.current_status,
+    metadata: {
+      rejectionReasonCode: params.rejectionReasonCode || null,
+      flaggedItems: params.flaggedItems || [],
+    },
+  });
+
+  await logAudit({
+    userId: params.actorUserId,
+    action: `doctor_verification_${params.newStatus.toLowerCase()}`,
+    entityType: 'doctor_verification',
+    entityId: verification.id,
+    oldValue: { verification_status: verification.current_status },
+    newValue: { verification_status: updated.current_status },
+  });
+
+  return updated;
+}
+
+adminRouter.post(
+  '/verifications/:verificationId/approve',
+  asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
+    const verification = await completeVerificationReview({
+      verificationId: req.params.verificationId,
+      actorUserId: req.user!.userId,
+      actorRole: req.user!.role,
+      newStatus: 'APPROVED',
+      userVisibleNote: req.body.userVisibleNote || 'Your doctor account is now verified. You can apply for shifts and bookings.',
+      internalNote: req.body.internalNote || null,
+    });
+
+    res.json({ message: 'Verification approved', verification });
+  }),
+);
+
+adminRouter.post(
+  '/verifications/:verificationId/request-resubmission',
+  asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
+    const flaggedItems = Array.isArray(req.body.flaggedItems) ? req.body.flaggedItems : [];
+    const reasonText = String(req.body.resubmissionReasonText || req.body.userVisibleNote || '').trim();
+    if (!reasonText) {
+      res.status(400).json({ error: 'A user-visible resubmission reason is required.' });
+      return;
+    }
+
+    const verification = await completeVerificationReview({
+      verificationId: req.params.verificationId,
+      actorUserId: req.user!.userId,
+      actorRole: req.user!.role,
+      newStatus: 'RESUBMISSION_REQUIRED',
+      userVisibleNote: reasonText,
+      internalNote: req.body.internalNote || null,
+      resubmissionReasonText: reasonText,
+      flaggedItems,
+    });
+
+    res.json({ message: 'Resubmission requested', verification });
+  }),
+);
+
+adminRouter.post(
+  '/verifications/:verificationId/reject',
+  asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
+    const reasonCode = String(req.body.rejectionReasonCode || '').trim();
+    const reasonText = String(req.body.rejectionReasonText || req.body.userVisibleNote || '').trim();
+    if (!reasonCode || !reasonText) {
+      res.status(400).json({ error: 'rejectionReasonCode and rejectionReasonText are required.' });
+      return;
+    }
+
+    const verification = await completeVerificationReview({
+      verificationId: req.params.verificationId,
+      actorUserId: req.user!.userId,
+      actorRole: req.user!.role,
+      newStatus: 'REJECTED',
+      userVisibleNote: reasonText,
+      internalNote: req.body.internalNote || null,
+      rejectionReasonCode: reasonCode,
+      rejectionReasonText: reasonText,
+    });
+
+    res.json({ message: 'Verification rejected', verification });
+  }),
+);
+
+adminRouter.post(
+  '/verifications/:verificationId/reopen',
+  asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
+    const db = getDb();
+    const verification = await db.prepare<any>('SELECT * FROM doctor_verifications WHERE id = ?').get(req.params.verificationId);
+    if (!verification) {
+      res.status(404).json({ error: 'Verification record not found' });
+      return;
+    }
+
+    const targetStatus = (req.body.targetStatus || 'RESUBMISSION_REQUIRED') as DoctorVerificationStatus;
+    const updated = await db.prepare(`
+      UPDATE doctor_verifications
+      SET
+        current_status = ?,
+        reviewed_by = ?,
+        reviewed_at = CURRENT_TIMESTAMP,
+        user_visible_note = ?,
+        internal_note = ?,
+        review_started_at = NULL
+      WHERE id = ?
+      RETURNING *
+    `).get(
+      targetStatus,
+      req.user!.userId,
+      req.body.userVisibleNote || 'Your verification has been reopened for follow-up.',
+      req.body.internalNote || null,
+      verification.id,
+    );
+
+    await syncLegacyUserVerificationStatus(updated.doctor_user_id, updated.current_status);
+    await appendVerificationAuditLog({
+      verificationId: verification.id,
+      actorUserId: req.user!.userId,
+      actorRole: req.user!.role,
+      eventType: 'verification_reopened',
+      oldStatus: verification.current_status,
+      newStatus: updated.current_status,
+    });
+
+    res.json({ message: 'Verification reopened', verification: updated });
   }),
 );
 

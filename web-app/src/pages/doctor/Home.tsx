@@ -6,6 +6,7 @@ import {
   Filter, Search, ChevronRight, RefreshCw, XCircle
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useDoctorVerification } from '../../hooks/useDoctorVerification';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -24,6 +25,7 @@ interface Offer {
 
 export default function DoctorHome() {
   const toast = useToast();
+  const { summary } = useDoctorVerification();
   const [viewState, setViewState] = useState<ViewState>('loading');
   const [offers, setOffers] = useState<Offer[]>([]);
   const [activeFilter, setActiveFilter] = useState<string>('all');
@@ -67,6 +69,10 @@ export default function DoctorHome() {
   });
 
   const handleAccept = async (shiftId: string) => {
+    if (!summary?.canApply) {
+      toast.error('Verification Required', summary?.blockingReason || 'Complete verification before accepting shifts.');
+      return;
+    }
     try {
       await api.post('/bookings/accept', { shiftId });
       toast.success('Shift accepted!', 'Check your bookings for details.');
@@ -108,6 +114,20 @@ export default function DoctorHome() {
           <p className="text-sm text-slate-500">Available shifts matching your profile and radius.</p>
         </div>
       </div>
+
+      {summary && !summary.canApply && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-amber-900">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-bold">{summary.title}</p>
+              <p className="mt-1 text-sm text-amber-800">{summary.blockingReason}</p>
+            </div>
+            <Link to="/doctor/profile" className="shrink-0 rounded-xl bg-white px-4 py-2 text-sm font-bold text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors">
+              {summary.primaryCta}
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2">
@@ -175,8 +195,17 @@ export default function DoctorHome() {
                   <Link to={`/doctor/shifts/${offer.id}`} className="flex-1 py-2.5 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors text-center">
                     View Details
                   </Link>
-                  <button onClick={() => handleAccept(offer.id)} className="flex-1 py-2.5 bg-emerald-600 text-white text-sm font-bold rounded-lg hover:bg-emerald-700 transition-colors shadow-sm shadow-emerald-600/20">
-                    Accept Shift
+                  <button
+                    onClick={() => handleAccept(offer.id)}
+                    disabled={!summary?.canApply}
+                    title={!summary?.canApply ? summary?.blockingReason || '' : 'Accept Shift'}
+                    className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-colors shadow-sm ${
+                      summary?.canApply
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-600/20'
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
+                    }`}
+                  >
+                    {summary?.canApply ? 'Accept Shift' : 'Verify to Apply'}
                   </button>
                 </div>
               </div>
@@ -187,4 +216,3 @@ export default function DoctorHome() {
     </div>
   );
 }
-

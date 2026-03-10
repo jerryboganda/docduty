@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -17,7 +20,9 @@ class CompleteProfileController extends GetxController {
   // Common
   final fullNameController = TextEditingController();
   final _selectedImage = Rx<XFile?>(null);
+  final _selectedImageBytes = Rx<Uint8List?>(null);
   XFile? get selectedImage => _selectedImage.value;
+  Uint8List? get selectedImageBytes => _selectedImageBytes.value;
   final picker = ImagePicker();
 
   // Doctor-specific
@@ -81,11 +86,67 @@ class CompleteProfileController extends GetxController {
       final picked = await picker.pickImage(source: source);
       if (picked != null) {
         _selectedImage.value = picked;
+        _selectedImageBytes.value = await picked.readAsBytes();
       }
-    } catch (_) {}
+    } catch (_) {
+      _errorMessage.value =
+          'Unable to access that image in the browser. Please try another file.';
+    }
   }
 
   void showImagePicker(BuildContext context) {
+    if (kIsWeb) {
+      Get.bottomSheet(
+        Container(
+          width: Get.width,
+          padding: EdgeInsets.all(Get.width / 18),
+          decoration: BoxDecoration(
+            color: notifier.getcontainer,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(Get.height / 35),
+              topRight: Radius.circular(Get.height / 35),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Upload a profile photo',
+                style: TextStyle(
+                  fontFamily: "Gilroy",
+                  fontSize: Get.height / 45,
+                  color: notifier.text,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              SizedBox(height: Get.height / 90),
+              Text(
+                'Browser mode currently supports file upload from your device.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: "Gilroy",
+                  fontSize: Get.height / 60,
+                  color: Colors.grey,
+                ),
+              ),
+              SizedBox(height: Get.height / 40),
+              SizedBox(
+                width: Get.width,
+                child: ElevatedButton(
+                  onPressed: () {
+                    pickImage(ImageSource.gallery);
+                    Get.back();
+                  },
+                  child: const Text('Choose Photo'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
+
     Get.bottomSheet(
       Container(
         height: Get.height / 9,
@@ -163,7 +224,7 @@ class CompleteProfileController extends GetxController {
       // Upload avatar if selected.
       String? avatarUrl;
       if (selectedImage != null) {
-        avatarUrl = await _upload.uploadAvatar(selectedImage!.path);
+        avatarUrl = await _upload.uploadAvatar(selectedImage!);
       }
 
       final data = <String, dynamic>{

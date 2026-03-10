@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -8,6 +9,8 @@ class PermissionHelper {
 
   /// Request location permission. Returns true if granted.
   static Future<bool> requestLocation() async {
+    if (kIsWeb) return true;
+
     var status = await Permission.locationWhenInUse.status;
     if (status.isGranted) return true;
 
@@ -35,6 +38,8 @@ class PermissionHelper {
 
   /// Request camera permission. Returns true if granted.
   static Future<bool> requestCamera() async {
+    if (kIsWeb) return true;
+
     var status = await Permission.camera.status;
     if (status.isGranted) return true;
 
@@ -62,6 +67,8 @@ class PermissionHelper {
 
   /// Request photo library permission. Returns true if granted.
   static Future<bool> requestPhotos() async {
+    if (kIsWeb) return true;
+
     var status = await Permission.photos.status;
     if (status.isGranted || status.isLimited) return true;
 

@@ -25,6 +25,7 @@ import { adminRouter } from './routes/admin.js';
 import { referenceRouter } from './routes/reference.js';
 import { contactRouter } from './routes/contact.js';
 import { uploadsRouter, handleMulterError } from './routes/uploads.js';
+import { doctorVerificationRouter } from './routes/doctorVerification.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -93,6 +94,7 @@ app.use('/api/uploads', express.static(env.uploadsDir, {
 
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter, uploadsRouter);
+app.use('/api/doctor', doctorVerificationRouter);
 app.use('/api/facilities', facilitiesRouter);
 app.use('/api/shifts', shiftsRouter);
 app.use('/api/bookings', bookingsRouter);

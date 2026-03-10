@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:get/get.dart' hide Response, FormData, MultipartFile;
 import 'package:docduty/core/config/env.dart';
@@ -179,14 +178,15 @@ class ApiClient extends GetxService {
   /// Upload a file (e.g., avatar). Uses multipart/form-data.
   Future<Map<String, dynamic>> upload(
     String path, {
-    required File file,
+    required List<int> bytes,
+    required String filename,
     String fieldName = 'avatar',
   }) async {
     try {
       final formData = FormData.fromMap({
-        fieldName: await MultipartFile.fromFile(
-          file.path,
-          filename: file.path.split('/').last,
+        fieldName: MultipartFile.fromBytes(
+          bytes,
+          filename: filename,
         ),
       });
       final response = await _dio.post(path, data: formData);

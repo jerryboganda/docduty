@@ -6,6 +6,7 @@ import {
   ShieldAlert, CheckCircle, Star, Info, X, RefreshCw, XCircle
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useDoctorVerification } from '../../hooks/useDoctorVerification';
 
 interface ShiftData {
   id: string;
@@ -26,6 +27,7 @@ export default function DoctorShiftDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const { summary } = useDoctorVerification();
   const [acceptModalOpen, setAcceptModalOpen] = useState(false);
   const [counterModalOpen, setCounterModalOpen] = useState(false);
   const [counterAmount, setCounterAmount] = useState('');
@@ -71,6 +73,10 @@ export default function DoctorShiftDetails() {
 
   const handleAccept = async () => {
     if (!shift) return;
+    if (!summary?.canApply) {
+      toast.error('Verification Required', summary?.blockingReason || 'Complete verification before accepting shifts.');
+      return;
+    }
     try {
       setSubmitting(true);
       await api.post('/bookings/accept', { shift_id: shift.id });
@@ -86,6 +92,10 @@ export default function DoctorShiftDetails() {
 
   const handleCounter = async () => {
     if (!shift) return;
+    if (!summary?.canApply) {
+      toast.error('Verification Required', summary?.blockingReason || 'Complete verification before sending counter offers.');
+      return;
+    }
     try {
       setSubmitting(true);
       await api.post('/bookings/counter', { shift_id: shift.id, proposed_amount: parseInt(counterAmount), note: counterNote });
@@ -127,6 +137,20 @@ export default function DoctorShiftDetails() {
       <Link to="/doctor" className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">
         <ArrowLeft className="w-4 h-4" /> Back to Offers
       </Link>
+
+      {summary && !summary.canApply && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-amber-900">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-bold">{summary.title}</p>
+              <p className="mt-1 text-sm text-amber-800">{summary.blockingReason}</p>
+            </div>
+            <Link to="/doctor/profile" className="shrink-0 rounded-xl border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100 transition-colors">
+              {summary.primaryCta}
+            </Link>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="p-6 border-b border-slate-100">
@@ -207,12 +231,28 @@ export default function DoctorShiftDetails() {
       {/* Sticky Bottom Actions */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20 flex gap-3 lg:static lg:bg-transparent lg:border-none lg:shadow-none lg:p-0">
         {shift.allowCounter && (
-          <button onClick={() => setCounterModalOpen(true)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 transition-colors">
-            Counter Offer
+          <button
+            onClick={() => setCounterModalOpen(true)}
+            disabled={!summary?.canApply}
+            className={`flex-1 py-3 font-bold rounded-xl transition-colors ${
+              summary?.canApply
+                ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+                : 'bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed'
+            }`}
+          >
+            {summary?.canApply ? 'Counter Offer' : 'Verify to Apply'}
           </button>
         )}
-        <button onClick={() => setAcceptModalOpen(true)} className="flex-[2] py-3 bg-emerald-600 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-colors">
-          Accept Shift
+        <button
+          onClick={() => setAcceptModalOpen(true)}
+          disabled={!summary?.canApply}
+          className={`flex-[2] py-3 font-bold rounded-xl transition-colors ${
+            summary?.canApply
+              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-700'
+              : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
+          }`}
+        >
+          {summary?.canApply ? 'Accept Shift' : 'Verify to Apply'}
         </button>
       </div>
 

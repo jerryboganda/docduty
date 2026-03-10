@@ -159,8 +159,10 @@ async function dispatchShift(shiftId: string, posterId: string): Promise<void> {
       SELECT dp.*, u.id AS user_id, u.status AS user_status, u.verification_status
       FROM doctor_profiles dp
       JOIN users u ON dp.user_id = u.id
+      JOIN doctor_verifications dv ON dv.doctor_user_id = u.id
       WHERE u.role = 'doctor'
         AND u.status = 'active'
+        AND dv.current_status = 'APPROVED'
         AND u.id != ?
         AND dp.availability_status = 'available'
     `;

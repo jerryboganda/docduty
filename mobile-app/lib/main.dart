@@ -27,10 +27,12 @@ Future<void> main() async {
   };
 
   // Lock portrait orientation
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
+  if (!kIsWeb) {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+  }
 
   // ─── Core singletons ────────────────────────────────────
   Get.put<SecureStorage>(SecureStorage(), permanent: true);
