@@ -108,6 +108,47 @@ function isStepComplete(s: Step, draft: any, docMap: Map<string, any>, avatarUrl
   }
 }
 
+function computeDraftMissingItems(draftData: any, docMap: Map<string, any>, email: string, avatarUrl?: string, requiresPostgraduateDocument?: boolean): string[] {
+  const personal = draftData?.personalIdentity || {};
+  const professional = draftData?.professionalPractice || {};
+  const education = draftData?.education || {};
+  const declaration = draftData?.declaration || {};
+  const missing: string[] = [];
+
+  if (!String(personal.legalFullName || '').trim()) missing.push('personalIdentity.legalFullName');
+  if (!String(personal.dateOfBirth || '').trim()) missing.push('personalIdentity.dateOfBirth');
+  if (!String(personal.cnicNumber || '').trim()) missing.push('personalIdentity.cnicNumber');
+  if (!String(personal.email || email || '').trim()) missing.push('personalIdentity.email');
+  if (!avatarUrl && !docMap.get('profile_photo')) missing.push('documents.profile_photo');
+
+  if (!String(professional.currentDesignation || '').trim()) missing.push('professionalPractice.currentDesignation');
+  if (!String(professional.primarySpecialty || '').trim()) missing.push('professionalPractice.primarySpecialty');
+  if (!String(professional.pmdcRegistrationNumber || '').trim()) missing.push('professionalPractice.pmdcRegistrationNumber');
+  if (!String(professional.currentPracticeCity || '').trim()) missing.push('professionalPractice.currentPracticeCity');
+  if (!Array.isArray(professional.preferredWorkCities) || professional.preferredWorkCities.filter((city: string) => String(city || '').trim()).length === 0) {
+    missing.push('professionalPractice.preferredWorkCities');
+  }
+
+  if (!String(education.mbbsInstitution || '').trim()) missing.push('education.mbbsInstitution');
+  if (!String(education.mbbsGraduationYear || '').trim()) missing.push('education.mbbsGraduationYear');
+  if (!String(education.houseJobStatus || '').trim()) missing.push('education.houseJobStatus');
+
+  if (!declaration.confirmsAccuracy) missing.push('declaration.confirmsAccuracy');
+  if (!declaration.confirmsGenuineDocuments) missing.push('declaration.confirmsGenuineDocuments');
+  if (!declaration.consentsToReview) missing.push('declaration.consentsToReview');
+
+  for (const type of ['pmdc_certificate', 'mbbs_degree', 'cnic_front', 'cnic_back', 'profile_photo']) {
+    if (type === 'profile_photo' && avatarUrl) continue;
+    if (!docMap.get(type)) missing.push(`documents.${type}`);
+  }
+
+  if (requiresPostgraduateDocument && !docMap.get('postgraduate_certificate')) {
+    missing.push('documents.postgraduate_certificate');
+  }
+
+  return Array.from(new Set(missing));
+}
+
 export default function DoctorProfile() {
   const { user } = useAuth();
   const toast = useToast();
@@ -142,7 +183,14 @@ export default function DoctorProfile() {
       setDraft(nextDraft);
       setStep(Number(nextDraft.step || 1) as Step);
       setDocuments((verificationData as any).documents || []);
-      setForm({ full_name: prof.full_name || '', email: p.email || '', phone: p.phone || '', city: prof.city_name || '', specialty: prof.specialty_name || '', pmdc_number: prof.pmdc_license || '' });
+      setForm({
+        full_name: nextDraft.personalIdentity.legalFullName || prof.full_name || '',
+        email: nextDraft.personalIdentity.email || p.email || '',
+        phone: p.phone || '',
+        city: nextDraft.professionalPractice.currentPracticeCity || prof.city_name || '',
+        specialty: nextDraft.professionalPractice.primarySpecialty || prof.specialty_name || '',
+        pmdc_number: nextDraft.professionalPractice.pmdcRegistrationNumber || prof.pmdc_license || '',
+      });
       setSkills((prof.skills || []).map((s: any) => s.name || s));
       setAllSkills(skillsData.skills || []);
       setViewState('success');
@@ -201,6 +249,13 @@ export default function DoctorProfile() {
     if (summary.status === 'REJECTED') return 'View Status';
     return 'View Submission';
   }, [summary]);
+  const effectiveMissingItems = useMemo(() => {
+    if (isReadOnly) {
+      return summary?.missingItems || [];
+    }
+
+    return computeDraftMissingItems(draft, docMap, form.email, user?.avatarUrl, requiresPostgraduateDocument);
+  }, [docMap, draft, form.email, isReadOnly, requiresPostgraduateDocument, summary?.missingItems, user?.avatarUrl]);
 
   const banner = !summary ? ['bg-slate-50 border-slate-200 text-slate-800', <Clock key="i" className="w-5 h-5 text-slate-500 mt-0.5" />] :
     summary.status === 'APPROVED' ? ['bg-emerald-50 border-emerald-200 text-emerald-800', <CheckCircle key="i" className="w-5 h-5 text-emerald-600 mt-0.5" />] :
@@ -228,6 +283,21 @@ export default function DoctorProfile() {
 
   const updateDraft = (section: string, field: string, value: any) => {
     if (isReadOnly) return;
+    if (section === 'personalIdentity' && field === 'legalFullName') {
+      setForm((current) => ({ ...current, full_name: value }));
+    }
+    if (section === 'personalIdentity' && field === 'email') {
+      setForm((current) => ({ ...current, email: value }));
+    }
+    if (section === 'professionalPractice' && field === 'primarySpecialty') {
+      setForm((current) => ({ ...current, specialty: value }));
+    }
+    if (section === 'professionalPractice' && field === 'currentPracticeCity') {
+      setForm((current) => ({ ...current, city: value }));
+    }
+    if (section === 'professionalPractice' && field === 'pmdcRegistrationNumber') {
+      setForm((current) => ({ ...current, pmdc_number: value }));
+    }
     setDraft((current: any) => ({ ...current, [section]: { ...current[section], [field]: value } }));
   };
 
@@ -655,7 +725,7 @@ export default function DoctorProfile() {
                           </label>
                         </div>
                       </motion.div>
-                      {!isReadOnly && reviewData.declaration.confirmsAccuracy && reviewData.declaration.confirmsGenuineDocuments && reviewData.declaration.consentsToReview && !summary?.missingItems?.length && (
+                      {!isReadOnly && reviewData.declaration.confirmsAccuracy && reviewData.declaration.confirmsGenuineDocuments && reviewData.declaration.consentsToReview && !effectiveMissingItems.length && (
                         <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.4, ease: [0, 0, 0.2, 1] }} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-center">
                           <Sparkles className="w-8 h-8 text-emerald-600 mx-auto" />
                           <p className="mt-2 text-lg font-bold text-emerald-900">Ready to Submit!</p>
@@ -669,16 +739,16 @@ export default function DoctorProfile() {
               </AnimatePresence>
 
               {/* Outstanding Items */}
-              {!isReadOnly && summary?.missingItems?.length ? (
+              {!isReadOnly && effectiveMissingItems.length ? (
                 <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-amber-200 bg-amber-50/80 p-5 mt-5">
                   <div className="flex items-center gap-2 mb-3">
                     <AlertTriangle className="w-4 h-4 text-amber-600" />
                     <p className="text-sm font-bold text-amber-900">Outstanding items</p>
-                    <span className="ml-auto text-xs font-bold text-amber-600 bg-amber-100 rounded-full px-2.5 py-0.5">{summary.missingItems.length}</span>
+                    <span className="ml-auto text-xs font-bold text-amber-600 bg-amber-100 rounded-full px-2.5 py-0.5">{effectiveMissingItems.length}</span>
                   </div>
                   <div className="space-y-2">
                     {Object.entries(
-                      summary.missingItems.reduce<Record<number, string[]>>((groups, item) => {
+                      effectiveMissingItems.reduce<Record<number, string[]>>((groups, item) => {
                         const info = MISSING_ITEM_LABELS[item];
                         const sNum = info?.step || 1;
                         if (!groups[sNum]) groups[sNum] = [];
@@ -711,7 +781,7 @@ export default function DoctorProfile() {
             {/* Sticky Footer */}
             <div className="border-t border-slate-200 bg-white px-6 py-4 shrink-0">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-slate-500">Step {step} of 5{!isReadOnly && summary?.missingItems?.length ? ` - ${summary.missingItems.length} item${summary.missingItems.length !== 1 ? 's' : ''} remaining` : ''}</p>
+                <p className="text-xs text-slate-500">Step {step} of 5{!isReadOnly && effectiveMissingItems.length ? ` - ${effectiveMissingItems.length} item${effectiveMissingItems.length !== 1 ? 's' : ''} remaining` : ''}</p>
                 <div className="flex gap-1">
                   {([1, 2, 3, 4, 5] as Step[]).map((s) => (
                     <div key={s} className={`w-8 h-1 rounded-full transition-all duration-300 ${s === step ? 'bg-emerald-500' : stepCompletion[s] ? 'bg-emerald-300' : 'bg-slate-200'}`} />

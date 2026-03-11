@@ -80,6 +80,61 @@ function normalizeArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
+async function syncDraftProfileFields(userId: string, draftData: Record<string, any>) {
+  const db = getDb();
+  const personal = draftData.personalIdentity || {};
+  const professional = draftData.professionalPractice || {};
+
+  const userFields: string[] = [];
+  const userValues: unknown[] = [];
+  const doctorProfileFields: string[] = [];
+  const doctorProfileValues: unknown[] = [];
+
+  const email = String(personal.email || '').trim();
+  if (email) {
+    userFields.push('email = ?');
+    userValues.push(email);
+  }
+
+  const legalFullName = String(personal.legalFullName || '').trim();
+  if (legalFullName) {
+    doctorProfileFields.push('full_name = ?');
+    doctorProfileValues.push(legalFullName);
+  }
+
+  const cnicNumber = String(personal.cnicNumber || '').trim();
+  if (cnicNumber) {
+    doctorProfileFields.push('cnic = ?');
+    doctorProfileValues.push(cnicNumber);
+  }
+
+  const pmdcRegistrationNumber = String(professional.pmdcRegistrationNumber || '').trim();
+  if (pmdcRegistrationNumber) {
+    doctorProfileFields.push('pmdc_license = ?');
+    doctorProfileValues.push(pmdcRegistrationNumber);
+  }
+
+  await db.transaction(async () => {
+    if (userFields.length > 0) {
+      userFields.push('updated_at = CURRENT_TIMESTAMP');
+      await db.prepare(`
+        UPDATE users
+        SET ${userFields.join(', ')}
+        WHERE id = ?
+      `).run(...userValues, userId);
+    }
+
+    if (doctorProfileFields.length > 0) {
+      doctorProfileFields.push('updated_at = CURRENT_TIMESTAMP');
+      await db.prepare(`
+        UPDATE doctor_profiles
+        SET ${doctorProfileFields.join(', ')}
+        WHERE user_id = ?
+      `).run(...doctorProfileValues, userId);
+    }
+  })();
+}
+
 function computeMissingItems(draftData: Record<string, any>, documents: Array<Record<string, any>>, email: string | null, avatarUrl: string | null): string[] {
   const personal = draftData.personalIdentity || {};
   const professional = draftData.professionalPractice || {};
@@ -87,11 +142,12 @@ function computeMissingItems(draftData: Record<string, any>, documents: Array<Re
 
   const docsByType = new Set(documents.map((document) => String(document.document_type)));
   const missing: string[] = [];
+  const resolvedEmail = String(personal.email || email || '').trim();
 
   if (!String(personal.legalFullName || '').trim()) missing.push('personalIdentity.legalFullName');
   if (!String(personal.dateOfBirth || '').trim()) missing.push('personalIdentity.dateOfBirth');
   if (!String(personal.cnicNumber || '').trim()) missing.push('personalIdentity.cnicNumber');
-  if (!email?.trim()) missing.push('personalIdentity.email');
+  if (!resolvedEmail) missing.push('personalIdentity.email');
   if (!avatarUrl && !docsByType.has('profile_photo')) missing.push('documents.profile_photo');
 
   if (!String(professional.currentDesignation || '').trim()) missing.push('professionalPractice.currentDesignation');
@@ -122,7 +178,7 @@ function computeMissingItems(draftData: Record<string, any>, documents: Array<Re
     missing.push('documents.postgraduate_certificate');
   }
 
-  return missing;
+  return Array.from(new Set(missing));
 }
 
 async function getDoctorContext(userId: string) {
@@ -188,6 +244,7 @@ router.post('/verification-draft', asyncHandler(async (req: AuthRequest, res: Re
   }
 
   const sanitized = sanitizeVerificationDraft(req.body || {});
+  await syncDraftProfileFields(req.user!.userId, sanitized);
   const context = await getDoctorContext(req.user!.userId);
   const documents = await getDoctorVerificationDocuments(verification.id);
   const missingItems = computeMissingItems(sanitized, documents as Array<Record<string, any>>, context.user?.email || null, context.user?.avatar_url || null);
@@ -306,10 +363,11 @@ router.post('/verification-submit', asyncHandler(async (req: AuthRequest, res: R
     return;
   }
 
-  const context = await getDoctorContext(req.user!.userId);
   const documents = await getDoctorVerificationDocuments(verification.id);
   const draftData = sanitizeVerificationDraft((verification.draft_data_json || {}) as Record<string, unknown>);
-  const missingItems = computeMissingItems(draftData, documents as Array<Record<string, any>>, context.user?.email || null, context.user?.avatar_url || null);
+  await syncDraftProfileFields(req.user!.userId, draftData);
+  const refreshedContext = await getDoctorContext(req.user!.userId);
+  const missingItems = computeMissingItems(draftData, documents as Array<Record<string, any>>, refreshedContext.user?.email || null, refreshedContext.user?.avatar_url || null);
 
   if (missingItems.length > 0) {
     await getDb().prepare(`
@@ -327,12 +385,12 @@ router.post('/verification-submit', asyncHandler(async (req: AuthRequest, res: R
 
   const snapshot = {
     user: {
-      id: context.user.id,
-      phone: context.user.phone,
-      email: context.user.email,
-      avatarUrl: context.user.avatar_url,
+      id: refreshedContext.user.id,
+      phone: refreshedContext.user.phone,
+      email: refreshedContext.user.email,
+      avatarUrl: refreshedContext.user.avatar_url,
     },
-    profile: context.profile,
+    profile: refreshedContext.profile,
     draftData,
     documents,
     attestationAcceptedAt: new Date().toISOString(),
