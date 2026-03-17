@@ -3,7 +3,7 @@
  * Zero-dependency CSV generation + download
  */
 
-export function exportToCsv(filename: string, rows: Record<string, any>[]): void {
+export function exportToCsv(filename: string, rows: Record<string, unknown>[]): void {
   if (!rows.length) return;
 
   const headers = Object.keys(rows[0]);

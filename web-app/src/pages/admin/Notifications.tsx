@@ -4,6 +4,7 @@ import { api } from '../../lib/api';
 import { formatRelative, formatDateTime } from '../../lib/dateUtils';
 import { exportToCsv } from '../../lib/csv';
 import { useToast } from '../../contexts/ToastContext';
+import type { NotificationsResponse } from '../../types/api';
 
 interface Notification {
   id: string;
@@ -44,7 +45,7 @@ export default function AdminNotifications() {
     try {
       setLoading(true);
       const unreadOnly = filter === 'unread' ? '&unreadOnly=true' : '';
-      const data = await api.get<any>(`/notifications?page=${page}&limit=50${unreadOnly}`);
+      const data = await api.get<NotificationsResponse>(`/notifications?page=${page}&limit=50${unreadOnly}`);
       setNotifications(data.notifications || []);
       setTotal(data.total || 0);
     } catch {
@@ -61,7 +62,9 @@ export default function AdminNotifications() {
       await api.put('/notifications/read-all');
       setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
       toast.success('All marked as read');
-    } catch {}
+    } catch {
+      toast.error('Failed to mark notifications as read');
+    }
   };
 
   const handleExport = () => {
@@ -103,7 +106,7 @@ export default function AdminNotifications() {
           <button onClick={handleExport} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
             <Download className="w-3.5 h-3.5" /> Export
           </button>
-          <button onClick={fetch_} className="p-1.5 text-slate-400 hover:text-slate-600">
+          <button onClick={fetch_} className="p-1.5 text-slate-400 hover:text-slate-600" aria-label="Refresh notifications">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
         </div>

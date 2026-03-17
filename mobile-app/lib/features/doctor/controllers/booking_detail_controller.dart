@@ -23,7 +23,12 @@ class BookingDetailController extends GetxController {
   final _error = ''.obs;
   String get error => _error.value;
 
-  String get bookingId => Get.arguments['bookingId'] ?? '';
+  String get bookingId {
+    final args = Get.arguments;
+    if (args is Map) return args['bookingId']?.toString() ?? '';
+    if (args is String) return args;
+    return '';
+  }
 
   @override
   void onInit() {

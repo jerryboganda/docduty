@@ -2,32 +2,63 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Search, Filter, UserCircle, Building2, ChevronRight, 
-  ShieldAlert, Activity, Star, Ban, Unlock, FileText, XCircle, RefreshCw
+  ShieldAlert, Activity, Star, Ban, Unlock, FileText, XCircle, RefreshCw, Loader2
 } from 'lucide-react';
 import { useToast } from '../../contexts/ToastContext';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiUser, ApiBooking, UsersResponse, BookingsResponse } from '../../types/api';
 
 type Tab = 'doctors' | 'facilities';
+
+interface RecentBookingView {
+  id: string;
+  shortId: string;
+  date: string;
+  time: string;
+  status: string;
+}
+
+interface UserView {
+  id: string;
+  fullId: string;
+  name: string;
+  specialty: string;
+  city: string;
+  status: string;
+  rating: number;
+  reliability: string;
+  flags: number;
+  type: string;
+}
+
+interface UserStats {
+  totalBookings: number;
+  noShows: number;
+  recentBookings: RecentBookingView[];
+}
 
 export default function Users() {
   const toast = useToast();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('doctors');
-  const [selectedUser, setSelectedUser] = useState<any | null>(null);
+  const [selectedUser, setSelectedUser] = useState<UserView | null>(null);
   const [actionModal, setActionModal] = useState<'suspend' | 'unsuspend' | null>(null);
-  const [users, setUsers] = useState<{ doctors: any[]; facilities: any[] }>({ doctors: [], facilities: [] });
+  const [users, setUsers] = useState<{ doctors: UserView[]; facilities: UserView[] }>({ doctors: [], facilities: [] });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [auditNote, setAuditNote] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
+  const [userStats, setUserStats] = useState<UserStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
 
   const fetchUsers = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get('/admin/users');
+      const data = await api.get<UsersResponse>('/admin/users');
       const allUsers = data.users || [];
-      const doctors = allUsers.filter((u: any) => u.role === 'doctor').map((u: any) => ({
+      const doctors = allUsers.filter((u: ApiUser) => u.role === 'doctor').map((u: ApiUser) => ({
         id: u.id?.slice(0, 8) || u.id,
         fullId: u.id,
         name: u.full_name || 'Unknown',
@@ -39,7 +70,7 @@ export default function Users() {
         flags: u.flags || 0,
         type: 'Doctor',
       }));
-      const facilities = allUsers.filter((u: any) => u.role === 'facility_admin').map((u: any) => ({
+      const facilities = allUsers.filter((u: ApiUser) => u.role === 'facility_admin').map((u: ApiUser) => ({
         id: u.id?.slice(0, 8) || u.id,
         fullId: u.id,
         name: u.full_name || u.facility_name || 'Unknown',
@@ -52,14 +83,48 @@ export default function Users() {
         specialty: u.facility_type || 'Hospital',
       }));
       setUsers({ doctors, facilities });
-    } catch (err) {
-      console.error('Failed to fetch users:', err);
+    } catch (err: unknown) {
+      toast.error('Failed to load users', getErrorMessage(err));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
+
+  const fetchUserStats = useCallback(async (userId: string) => {
+    try {
+      setStatsLoading(true);
+      // Fetch a large sample of bookings and filter client-side for this user
+      const data = await api.get<BookingsResponse>(`/bookings?limit=500`);
+      const allBookings = data.bookings || [];
+      const userBookings = allBookings.filter((b: ApiBooking) => b.doctor_id === userId || b.poster_id === userId);
+      const noShows = userBookings.filter((b: ApiBooking) => b.status === 'no_show').length;
+      const recent = userBookings.slice(0, 5).map((b: ApiBooking) => ({
+        id: b.id,
+        shortId: b.id?.slice(0, 8) || b.id,
+        date: b.created_at ? new Date(b.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
+        time: b.start_time && b.end_time 
+          ? `${new Date(b.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} - ${new Date(b.end_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+          : 'N/A',
+        status: b.status || 'pending',
+      }));
+      setUserStats({ totalBookings: userBookings.length, noShows, recentBookings: recent });
+    } catch (err: unknown) {
+      toast.error('Failed to load booking stats');
+      setUserStats({ totalBookings: 0, noShows: 0, recentBookings: [] });
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedUser?.fullId) {
+      fetchUserStats(selectedUser.fullId);
+    } else {
+      setUserStats(null);
+    }
+  }, [selectedUser, fetchUserStats]);
 
   const data = users[activeTab].filter(u => {
     const matchesSearch = !search || u.name.toLowerCase().includes(search.toLowerCase()) || u.id.toLowerCase().includes(search.toLowerCase()) || u.city.toLowerCase().includes(search.toLowerCase());
@@ -79,8 +144,8 @@ export default function Users() {
       setAuditNote('');
       toast.success('User action completed');
       fetchUsers();
-    } catch (err: any) {
-      toast.error('Action Failed', err.message || 'Action failed');
+    } catch (err: unknown) {
+      toast.error('Action Failed', getErrorMessage(err));
     }
   };
 
@@ -233,11 +298,15 @@ export default function Users() {
                   </div>
                   <div className="bg-white p-3 rounded-lg border border-slate-200 text-center">
                     <p className="text-xs text-slate-500 font-medium">Total Bookings</p>
-                    <p className="text-xl font-black text-slate-900 mt-1">142</p>
+                    <p className="text-xl font-black text-slate-900 mt-1">
+                      {statsLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400" /> : (userStats?.totalBookings ?? '--')}
+                    </p>
                   </div>
                   <div className="bg-white p-3 rounded-lg border border-slate-200 text-center">
                     <p className="text-xs text-slate-500 font-medium">No-shows</p>
-                    <p className="text-xl font-black text-slate-900 mt-1 text-red-600">2</p>
+                    <p className="text-xl font-black text-slate-900 mt-1 text-red-600">
+                      {statsLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400" /> : (userStats?.noShows ?? '--')}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -248,11 +317,9 @@ export default function Users() {
                   <ShieldAlert className="w-4 h-4" /> Risk Flags ({selectedUser.flags})
                 </h3>
                 {selectedUser.flags > 0 ? (
-                  <ul className="space-y-2 text-sm text-amber-800 list-disc pl-4">
-                    <li>Multiple late cancellations in last 30 days.</li>
-                    <li>Geofence mismatch reported on BK-5088.</li>
-                    <li>Dispute raised by facility regarding professionalism.</li>
-                  </ul>
+                  <p className="text-sm text-amber-800">
+                    This user has {selectedUser.flags} active flag{selectedUser.flags > 1 ? 's' : ''}. Review their booking history and disputes for details.
+                  </p>
                 ) : (
                   <p className="text-sm text-amber-700/70 italic">No active risk flags.</p>
                 )}
@@ -296,20 +363,32 @@ export default function Users() {
               <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                 <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
                   <h3 className="text-sm font-bold text-slate-900">Recent Bookings</h3>
-                  <button onClick={() => navigate('/admin/bookings')} className="text-xs font-medium text-indigo-600 hover:text-indigo-700">View All</button>
                 </div>
                 <div className="divide-y divide-slate-100">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                      <div>
-                        <p className="text-sm font-bold text-slate-900">BK-508{i}</p>
-                        <p className="text-xs text-slate-500 mt-0.5">Feb {20 - i}, 2026 • 09:00 AM - 05:00 PM</p>
-                      </div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
-                        Completed
-                      </span>
+                  {statsLoading ? (
+                    <div className="p-8 flex items-center justify-center">
+                      <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
                     </div>
-                  ))}
+                  ) : (userStats?.recentBookings || []).length === 0 ? (
+                    <div className="p-8 text-center text-sm text-slate-400">No bookings found.</div>
+                  ) : (
+                    (userStats?.recentBookings || []).map((b) => (
+                      <div key={b.id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                        <div>
+                          <p className="text-sm font-bold text-slate-900">{b.shortId}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">{b.date} &bull; {b.time}</p>
+                        </div>
+                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                          b.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                          b.status === 'no_show' ? 'bg-red-50 text-red-700 border-red-200' :
+                          b.status === 'cancelled' ? 'bg-slate-50 text-slate-700 border-slate-200' :
+                          'bg-amber-50 text-amber-700 border-amber-200'
+                        }`}>
+                          {b.status}
+                        </span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 

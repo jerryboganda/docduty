@@ -6,6 +6,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Camera, Upload, Trash2, Loader2, X, Check } from 'lucide-react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
 import { useAuth } from '../contexts/AuthContext';
 import UserAvatar from './UserAvatar';
 
@@ -91,8 +92,8 @@ export default function AvatarUpload({ currentAvatarUrl, userName, onAvatarChang
       setSuccess('Avatar updated successfully!');
       setPreview(null);
       setSelectedFile(null);
-    } catch (err: any) {
-      setError(err.message || 'Failed to upload avatar');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setUploading(false);
     }
@@ -110,8 +111,8 @@ export default function AvatarUpload({ currentAvatarUrl, userName, onAvatarChang
       setSuccess('Avatar removed');
       setPreview(null);
       setSelectedFile(null);
-    } catch (err: any) {
-      setError(err.message || 'Failed to remove avatar');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setRemoving(false);
     }

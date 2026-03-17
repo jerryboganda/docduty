@@ -8,17 +8,34 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../database/schema.js';
 import { authMiddleware, type AuthRequest, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../utils/audit.js';
+import { logger } from '../utils/logger.js';
 import { processCancellationRefund } from '../utils/settlement.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { ShiftRow, BookingRow, DoctorProfileRow, PolicyValueRow } from '../types.js';
 
-type PolicyRow = { value: string };
+type EligibleDoctorRow = DoctorProfileRow & {
+  user_id: string;
+  user_status: string;
+  verification_status: string;
+};
+
+type ShiftDetailRow = ShiftRow & {
+  specialty_name?: string;
+  role_name?: string;
+  city_name?: string;
+  location_name?: string;
+  location_address?: string;
+  location_lat?: number;
+  location_lng?: number;
+  geofence_radius_m?: number;
+};
 
 export const shiftsRouter = Router();
 shiftsRouter.use(authMiddleware);
 
 async function getNumericPolicy(key: string, fallback: number): Promise<number> {
   const db = getDb();
-  const policy = await db.prepare<PolicyRow>('SELECT value FROM policy_config WHERE key = ?').get(key);
+  const policy = await db.prepare<PolicyValueRow>('SELECT value FROM policy_config WHERE key = ?').get(key);
   const parsed = Number.parseInt(policy?.value ?? '', 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -75,6 +92,41 @@ shiftsRouter.post(
     if (!['replacement', 'vacancy'].includes(shiftType)) {
       res.status(400).json({ error: 'type must be replacement or vacancy' });
       return;
+    }
+
+    // M-021: Prevent creating shifts in the past
+    const shiftStartDate = new Date(startTime);
+    if (shiftStartDate.getTime() <= Date.now()) {
+      res.status(400).json({ error: 'startTime must be in the future' });
+      return;
+    }
+
+    // M-022: Validate endTime > startTime
+    const shiftEndDate = new Date(endTime);
+    if (shiftEndDate.getTime() <= shiftStartDate.getTime()) {
+      res.status(400).json({ error: 'endTime must be after startTime' });
+      return;
+    }
+
+    // M-023: Hourly rate / total price must be positive
+    if (typeof price !== 'number' || price <= 0) {
+      res.status(400).json({ error: 'totalPricePkr/offeredRate must be a positive number' });
+      return;
+    }
+
+    // H-007: Validate facilityLocationId belongs to the posting user
+    if (facilityLocationId) {
+      const locationOwnership = await db.prepare<{ id: string }>(`
+        SELECT fl.id
+        FROM facility_locations fl
+        JOIN facility_accounts fa ON fl.facility_id = fa.id
+        WHERE fl.id = ? AND fa.user_id = ?
+      `).get(facilityLocationId, req.user!.userId);
+
+      if (!locationOwnership && req.user!.role !== 'platform_admin') {
+        res.status(403).json({ error: 'facilityLocationId does not belong to your facility' });
+        return;
+      }
     }
 
     const commissionPct = await getNumericPolicy('platform_commission_pct', 10);
@@ -150,7 +202,7 @@ shiftsRouter.post(
 async function dispatchShift(shiftId: string, posterId: string): Promise<void> {
   try {
     const db = getDb();
-    const shift = await db.prepare<any>('SELECT * FROM shifts WHERE id = ?').get(shiftId);
+    const shift = await db.prepare<ShiftRow>('SELECT * FROM shifts WHERE id = ?').get(shiftId);
     if (!shift) {
       return;
     }
@@ -207,7 +259,7 @@ async function dispatchShift(shiftId: string, posterId: string): Promise<void> {
 
     query += ' ORDER BY dp.reliability_score DESC NULLS LAST, dp.rating_avg DESC NULLS LAST LIMIT 20';
 
-    const eligibleDoctors = await db.prepare<any>(query).all(...params);
+    const eligibleDoctors = await db.prepare<EligibleDoctorRow>(query).all(...params);
     const insertOffer = db.prepare(`
       INSERT INTO offers (id, shift_id, doctor_id, type, status)
       VALUES (?, ?, ?, 'dispatch', 'pending')
@@ -225,14 +277,14 @@ async function dispatchShift(shiftId: string, posterId: string): Promise<void> {
         doctor.user_id,
         'New Shift Available',
         `${shift.title} - PKR ${shift.payout_pkr}`,
-        { shiftId, offerId },
+        JSON.stringify({ shiftId, offerId }),
       );
     }
 
-    console.log(`[Dispatch] Shift ${shiftId}: dispatched to ${eligibleDoctors.length} doctors`);
+    logger.info('Shift dispatched', { shiftId, doctorsCount: eligibleDoctors.length });
   } catch (error) {
     const err = error as Error;
-    console.error('[Dispatch Error]', err.message);
+    logger.error('Shift dispatch failed', { error: err.message });
   }
 }
 
@@ -372,7 +424,7 @@ shiftsRouter.get(
   '/:id',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const shift = await db.prepare<any>(`
+    const shift = await db.prepare<ShiftDetailRow>(`
       SELECT s.*,
         sp.name AS specialty_name,
         r.name AS role_name,
@@ -395,15 +447,16 @@ shiftsRouter.get(
       return;
     }
 
-    shift.skills = await db.prepare(`
+    const skills = await db.prepare(`
       SELECT sk.id, sk.name
       FROM shift_skills ss
       JOIN skills sk ON ss.skill_id = sk.id
       WHERE ss.shift_id = ?
     `).all(shift.id);
 
+    let offers;
     if (req.user!.userId === shift.poster_id || req.user!.role === 'platform_admin') {
-      shift.offers = await db.prepare(`
+      offers = await db.prepare(`
         SELECT o.*, dp.full_name AS doctor_name, dp.reliability_score, dp.rating_avg
         FROM offers o
         LEFT JOIN doctor_profiles dp ON dp.user_id = o.doctor_id
@@ -412,9 +465,9 @@ shiftsRouter.get(
       `).all(shift.id);
     }
 
-    shift.booking = await db.prepare('SELECT * FROM bookings WHERE shift_id = ?').get(shift.id) || null;
+    const booking = await db.prepare<BookingRow>('SELECT * FROM bookings WHERE shift_id = ?').get(shift.id) || null;
 
-    res.json(shift);
+    res.json({ ...shift, skills, offers, booking });
   }),
 );
 
@@ -426,7 +479,7 @@ shiftsRouter.put(
   '/:id',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const shift = await db.prepare<any>('SELECT * FROM shifts WHERE id = ?').get(req.params.id);
+    const shift = await db.prepare<ShiftRow>('SELECT * FROM shifts WHERE id = ?').get(req.params.id);
 
     if (!shift) {
       res.status(404).json({ error: 'Shift not found' });
@@ -533,7 +586,7 @@ shiftsRouter.put(
   '/:id/cancel',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const shift = await db.prepare<any>('SELECT * FROM shifts WHERE id = ?').get(req.params.id);
+    const shift = await db.prepare<ShiftRow>('SELECT * FROM shifts WHERE id = ?').get(req.params.id);
 
     if (!shift) {
       res.status(404).json({ error: 'Shift not found' });
@@ -556,7 +609,7 @@ shiftsRouter.put(
       await db.prepare("UPDATE shifts SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(shift.id);
       await db.prepare("UPDATE offers SET status = 'expired' WHERE shift_id = ? AND status = 'pending'").run(shift.id);
 
-      const booking = await db.prepare<any>(
+      const booking = await db.prepare<BookingRow>(
         "SELECT * FROM bookings WHERE shift_id = ? AND status IN ('confirmed', 'pending_payment')",
       ).get(shift.id);
 
@@ -579,7 +632,7 @@ shiftsRouter.put(
           uuidv4(),
           booking.doctor_id,
           `The shift "${shift.title}" has been cancelled by the poster`,
-          { bookingId: booking.id, shiftId: shift.id },
+          JSON.stringify({ bookingId: booking.id, shiftId: shift.id }),
         );
 
         if (req.user!.userId === booking.doctor_id) {

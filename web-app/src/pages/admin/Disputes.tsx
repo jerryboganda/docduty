@@ -5,17 +5,22 @@ import {
   MessageSquare, MapPin, QrCode, ShieldAlert, CheckCircle, XCircle, DollarSign, RefreshCw
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useToast } from '../../contexts/ToastContext';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiDispute, ApiAttendanceEvent, DisputesResponse } from '../../types/api';
 
 export default function DisputesCenter() {
   const navigate = useNavigate();
-  const [selectedDispute, setSelectedDispute] = useState<any | null>(null);
+  const toast = useToast();
+  const [selectedDispute, setSelectedDispute] = useState<ApiDispute | null>(null);
+  const [selectedDisputeDetail, setSelectedDisputeDetail] = useState<ApiDispute | null>(null);
   const [actionModal, setActionModal] = useState<'resolve' | 'moreInfo' | null>(null);
-  const [disputes, setDisputes] = useState<any[]>([]);
+  const [disputes, setDisputes] = useState<ApiDispute[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [statusFilterValue, setStatusFilterValue] = useState('');
-  const [resolutionOutcome, setResolutionOutcome] = useState('Favor Facility (Refund + Penalize Doctor)');
+  const [resolutionOutcome, setResolutionOutcome] = useState('full_refund');
   const [financialAdj, setFinancialAdj] = useState('');
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [auditNote, setAuditNote] = useState('');
@@ -24,10 +29,10 @@ export default function DisputesCenter() {
   const fetchDisputes = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get('/disputes');
+      const data = await api.get<DisputesResponse>('/disputes');
       setDisputes(data.disputes || []);
-    } catch (err) {
-      console.error('Failed to fetch disputes:', err);
+    } catch (err: unknown) {
+      toast.error('Failed to load disputes', getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -35,7 +40,23 @@ export default function DisputesCenter() {
 
   useEffect(() => { fetchDisputes(); }, [fetchDisputes]);
 
-  const filteredDisputes = disputes.filter((d: any) => {
+  useEffect(() => {
+    if (!selectedDispute?.id) {
+      setSelectedDisputeDetail(null);
+      return;
+    }
+    (async () => {
+      try {
+        const detail = await api.get<ApiDispute>(`/disputes/${selectedDispute.id}`);
+        setSelectedDisputeDetail(detail);
+      } catch {
+        toast.error('Failed to load dispute details');
+        setSelectedDisputeDetail(null);
+      }
+    })();
+  }, [selectedDispute?.id]);
+
+  const filteredDisputes = disputes.filter((d: ApiDispute) => {
     if (!search && !statusFilterValue) return true;
     const s = search.toLowerCase();
     const matchesSearch = !search || (d.id || '').toLowerCase().includes(s) || (d.type || '').toLowerCase().includes(s) ||
@@ -44,24 +65,34 @@ export default function DisputesCenter() {
     return matchesSearch && matchesStatus;
   });
 
-  const handleResolve = async () => {
+  const handleConfirmAction = async () => {
     if (!selectedDispute) return;
     try {
       setSubmitting(true);
-      await api.put(`/disputes/${selectedDispute.id}/resolve`, {
-        resolution: resolutionOutcome,
-        adjustmentAmountPkr: financialAdj ? parseInt(financialAdj) : 0,
-        notes: resolutionNotes,
-        auditNote,
-      });
+      if (actionModal === 'resolve') {
+        const mergedNotes = [resolutionNotes, auditNote ? `[Audit] ${auditNote}` : ''].filter(Boolean).join('\n\n');
+        await api.put(`/disputes/${selectedDispute.id}/resolve`, {
+          resolutionType: resolutionOutcome,
+          resolutionNotes: mergedNotes || null,
+          ...(financialAdj ? { financialAdjustment: parseFloat(financialAdj) } : {}),
+        });
+      } else {
+        await api.put(`/disputes/${selectedDispute.id}/review`);
+        if (resolutionNotes.trim()) {
+          await api.post(`/disputes/${selectedDispute.id}/evidence`, {
+            type: 'text',
+            content: resolutionNotes.trim(),
+          });
+        }
+      }
       setActionModal(null);
       setSelectedDispute(null);
       setResolutionNotes('');
       setAuditNote('');
       setFinancialAdj('');
       fetchDisputes();
-    } catch (err) {
-      console.error('Resolve failed:', err);
+    } catch (err: unknown) {
+      toast.error('Action failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -202,7 +233,7 @@ export default function DisputesCenter() {
               <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
                 <h3 className="text-sm font-bold text-slate-900 mb-3">Issue Description</h3>
                 <p className="text-sm text-slate-700 leading-relaxed bg-white p-3 rounded-lg border border-slate-200">
-                  "The doctor did not show up for the shift. We tried calling but received no response. We had to find emergency cover."
+                  {selectedDisputeDetail?.description || 'No dispute description provided.'}
                   <br /><br />
                   <span className="text-xs font-bold text-slate-500">— Submitted by {selectedDispute.raised_by_phone || 'User'}</span>
                 </p>
@@ -223,14 +254,14 @@ export default function DisputesCenter() {
                       <MapPin className="w-5 h-5 text-red-500 shrink-0" />
                       <div>
                         <p className="text-xs font-bold text-slate-900 mb-1">Geofence Status</p>
-                        <p className="text-xs text-slate-600">Doctor device never entered the 200m radius of the facility during the shift window.</p>
+                        <p className="text-xs text-slate-600">{selectedDisputeDetail?.attendanceEvents?.some((e: ApiAttendanceEvent) => e.geo_valid) ? 'At least one attendance event passed geofence validation.' : 'No attendance event passed geofence validation.'}</p>
                       </div>
                     </div>
                     <div className="border border-slate-200 rounded-xl p-3 bg-slate-50 flex items-start gap-3">
                       <QrCode className="w-5 h-5 text-red-500 shrink-0" />
                       <div>
                         <p className="text-xs font-bold text-slate-900 mb-1">QR Scan</p>
-                        <p className="text-xs text-slate-600">No successful QR scan recorded for this booking ID.</p>
+                        <p className="text-xs text-slate-600">{selectedDisputeDetail?.attendanceEvents?.some((e: ApiAttendanceEvent) => e.qr_valid) ? 'Successful QR validation exists for this booking.' : 'No successful QR validation was recorded for this booking.'}</p>
                       </div>
                     </div>
                   </div>
@@ -241,12 +272,10 @@ export default function DisputesCenter() {
                       <MessageSquare className="w-5 h-5 text-indigo-600" />
                       <div>
                         <p className="text-sm font-bold text-slate-900">Booking Chat Transcript</p>
-                        <p className="text-xs text-slate-500">3 messages exchanged before shift.</p>
+                        <p className="text-xs text-slate-500">Review conversation via role-specific booking messages.</p>
                       </div>
                     </div>
-                    <button onClick={() => navigate('/admin/messages')} className="text-xs font-bold text-indigo-600 hover:text-indigo-700 bg-white px-3 py-1.5 rounded-lg border border-indigo-200 shadow-sm">
-                      View Chat
-                    </button>
+                    <span className="text-xs font-bold text-slate-500 bg-white px-3 py-1.5 rounded-lg border border-slate-200">No admin chat route</span>
                   </div>
 
                   {/* Timeline */}
@@ -258,7 +287,7 @@ export default function DisputesCenter() {
                         <div className="w-[calc(100%-2rem)] md:w-[calc(50%-1.5rem)] p-2 rounded border border-slate-100 bg-slate-50 shadow-sm">
                           <div className="flex items-center justify-between mb-1">
                             <div className="font-bold text-slate-900 text-xs">Shift Start Time</div>
-                            <div className="text-[10px] text-slate-500">09:00 AM</div>
+                            <div className="text-[10px] text-slate-500">{selectedDisputeDetail?.start_time ? new Date(selectedDisputeDetail.start_time).toLocaleTimeString() : 'N/A'}</div>
                           </div>
                         </div>
                       </div>
@@ -266,8 +295,8 @@ export default function DisputesCenter() {
                         <div className="flex items-center justify-center w-4 h-4 rounded-full border-2 border-white bg-red-500 text-white shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2"></div>
                         <div className="w-[calc(100%-2rem)] md:w-[calc(50%-1.5rem)] p-2 rounded border border-red-100 bg-red-50 shadow-sm">
                           <div className="flex items-center justify-between mb-1">
-                            <div className="font-bold text-red-900 text-xs">Check-in Window Missed</div>
-                            <div className="text-[10px] text-red-700">09:15 AM</div>
+                            <div className="font-bold text-red-900 text-xs">{selectedDisputeDetail?.attendanceEvents?.some((e: ApiAttendanceEvent) => e.event_type === 'check_in') ? 'Check-in Recorded' : 'Check-in Window Missed'}</div>
+                            <div className="text-[10px] text-red-700">{selectedDisputeDetail?.check_in_time ? new Date(selectedDisputeDetail.check_in_time).toLocaleTimeString() : 'N/A'}</div>
                           </div>
                         </div>
                       </div>
@@ -311,16 +340,16 @@ export default function DisputesCenter() {
                 </div>
               </div>
 
-              {/* Resolution Summary Placeholder */}
+              {/* Resolution Summary */}
               {selectedDispute.status === 'resolved' && (
                 <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-4">
                   <h3 className="text-sm font-bold text-emerald-900 mb-2 flex items-center gap-2">
                     <CheckCircle className="w-4 h-4" /> Resolution Summary
                   </h3>
                   <p className="text-xs text-emerald-800 leading-relaxed">
-                    Dispute resolved in favor of facility. Doctor penalized with a no-show strike and cancellation fee applied. Escrow refunded to facility.
+                    {selectedDisputeDetail?.resolution_notes || `Dispute resolved with outcome: ${selectedDisputeDetail?.resolution_type || 'N/A'}.`}
                   </p>
-                  <p className="text-[10px] text-emerald-600 mt-2 font-medium">— Resolved by Admin User on Feb 25, 2026</p>
+                  <p className="text-[10px] text-emerald-600 mt-2 font-medium">— Resolved on {selectedDisputeDetail?.resolved_at ? new Date(selectedDisputeDetail.resolved_at).toLocaleString() : 'N/A'}</p>
                 </div>
               )}
 
@@ -351,10 +380,13 @@ export default function DisputesCenter() {
                       value={resolutionOutcome}
                       onChange={(e) => setResolutionOutcome(e.target.value)}
                       className="w-full p-3 text-sm border border-slate-200 rounded-xl bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none">
-                      <option>Favor Facility (Refund + Penalize Doctor)</option>
-                      <option>Favor Doctor (Release Payout)</option>
-                      <option>Split / Partial Refund</option>
-                      <option>Dismiss (No Action)</option>
+                      <option value="full_refund">Favor Facility (Full Refund)</option>
+                      <option value="penalty">Favor Facility (Penalty + Adjustment)</option>
+                      <option value="full_payout">Favor Doctor (Full Payout)</option>
+                      <option value="partial_payout">Partial Payout</option>
+                      <option value="partial_refund">Partial Refund</option>
+                      <option value="dismissed">Dismiss</option>
+                      <option value="no_action">No Action</option>
                     </select>
                   </div>
                   
@@ -404,7 +436,7 @@ export default function DisputesCenter() {
                   Cancel
                 </button>
                 <button 
-                  onClick={handleResolve}
+                  onClick={handleConfirmAction}
                   disabled={submitting}
                   className={`flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition-colors shadow-sm shadow-indigo-600/20 ${submitting ? 'opacity-50' : ''}`}
                 >

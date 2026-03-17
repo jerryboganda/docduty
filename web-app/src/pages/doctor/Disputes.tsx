@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useToast } from '../../contexts/ToastContext';
 import { 
-  AlertTriangle, Search, Filter, MessageSquare, 
-  ChevronRight, RefreshCw, XCircle, Building2
+  AlertTriangle, Search, Filter, 
+  ChevronRight, RefreshCw, XCircle, Building2, Upload
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiBooking, ApiDispute, DisputesResponse, BookingsResponse } from '../../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -33,34 +35,34 @@ export default function DoctorDisputes() {
   const [showFilters, setShowFilters] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   const [newDispute, setNewDispute] = useState({ booking_id: '', type: 'Payment Issue', description: '' });
-  const [bookings, setBookings] = useState<any[]>([]);
+  const [bookings, setBookings] = useState<ApiBooking[]>([]);
+  const [evidenceFiles, setEvidenceFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchDisputes = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/disputes?limit=50');
-      const mapped: Dispute[] = (data.disputes || []).map((d: any) => ({
+      const data = await api.get<DisputesResponse>('/disputes?limit=50');
+      const mapped: Dispute[] = (data.disputes || []).map((d: ApiDispute) => ({
         id: d.id,
         bookingId: d.booking_id || 'N/A',
-        facility: d.facility_name || d.respondent_name || 'Facility',
-        type: d.type || d.category || 'General',
+        facility: d.respondent_name || 'Facility',
+        type: d.type || 'General',
         status: STATUS_MAP[d.status] || d.status || 'Open',
         date: d.created_at ? new Date(d.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
       }));
       setDisputes(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch disputes:', err);
       setViewState('error');
     }
   }, []);
 
   const fetchBookings = useCallback(async () => {
     try {
-      const data = await api.get('/bookings?limit=50');
+      const data = await api.get<BookingsResponse>('/bookings?limit=50');
       setBookings(data.bookings || []);
     } catch (err) {
-      console.error('[Disputes] Failed to fetch bookings:', err);
     }
   }, []);
 
@@ -73,13 +75,27 @@ export default function DoctorDisputes() {
       await api.post('/disputes', newDispute);
       setCreateModalOpen(false);
       setNewDispute({ booking_id: '', type: 'Payment Issue', description: '' });
+      setEvidenceFiles([]);
       toast.success('Dispute created');
       fetchDisputes();
-    } catch (err: any) {
-      toast.error('Dispute Failed', err.message || 'Failed to create dispute');
+    } catch (err: unknown) {
+      toast.error('Dispute Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      setEvidenceFiles(prev => [...prev, ...Array.from(files)]);
+    }
+    // Reset input so re-selecting the same file works
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeFile = (index: number) => {
+    setEvidenceFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const filteredDisputes = disputes.filter(d => {
@@ -93,6 +109,21 @@ export default function DoctorDisputes() {
       <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
         <RefreshCw className="w-10 h-10 text-emerald-600 animate-spin" />
         <p className="text-slate-500 font-medium">Loading disputes...</p>
+      </div>
+    );
+  }
+
+  if (viewState === 'error') {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
+        <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-2">
+          <XCircle className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-slate-900">Connection Error</h2>
+        <p className="text-slate-500 text-center max-w-md">Unable to load disputes. Please check your connection.</p>
+        <button onClick={() => fetchDisputes()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition-colors">
+          Retry
+        </button>
       </div>
     );
   }
@@ -195,7 +226,7 @@ export default function DoctorDisputes() {
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Select Booking</label>
                 <select value={newDispute.booking_id} onChange={(e) => setNewDispute(p => ({ ...p, booking_id: e.target.value }))} className="w-full p-3 text-sm border border-slate-200 rounded-xl bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none">
                   <option value="">Select a booking...</option>
-                  {bookings.map((b: any) => (
+                  {bookings.map((b: ApiBooking) => (
                     <option key={b.id} value={b.id}>{b.id.slice(0, 8)} - {b.facility_name || 'Facility'}</option>
                   ))}
                 </select>
@@ -222,9 +253,35 @@ export default function DoctorDisputes() {
                 ></textarea>
               </div>
 
-              <div className="border-2 border-dashed border-slate-200 rounded-xl p-4 flex flex-col items-center justify-center text-center bg-slate-50 cursor-pointer hover:bg-slate-100 transition-colors">
-                <p className="text-sm font-medium text-slate-700">Upload Evidence (Optional)</p>
-                <p className="text-xs text-slate-500 mt-1">Screenshots, documents, etc.</p>
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*,.pdf,.doc,.docx"
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-slate-200 rounded-xl p-4 flex flex-col items-center justify-center text-center bg-slate-50 cursor-pointer hover:bg-slate-100 hover:border-slate-300 transition-colors"
+                >
+                  <Upload className="w-5 h-5 text-slate-400 mb-1" />
+                  <p className="text-sm font-medium text-slate-700">Upload Evidence (Optional)</p>
+                  <p className="text-xs text-slate-500 mt-1">Screenshots, documents, etc.</p>
+                </div>
+                {evidenceFiles.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {evidenceFiles.map((file, idx) => (
+                      <div key={file.name} className="flex items-center justify-between bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                        <span className="text-slate-700 truncate max-w-[200px]">{file.name}</span>
+                        <button onClick={() => removeFile(idx)} className="text-slate-400 hover:text-red-500 ml-2 shrink-0">
+                          <XCircle className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <button 

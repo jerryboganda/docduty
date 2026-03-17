@@ -1,33 +1,73 @@
 import { useState, useEffect, useCallback } from 'react';
 import { 
   Save, Clock, AlertTriangle, DollarSign, 
-  History, CheckCircle, XCircle, RefreshCw
+  History, CheckCircle, XCircle, RefreshCw, Loader2
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useToast } from '../../contexts/ToastContext';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiPolicyConfig, PoliciesResponse, AuditLogsResponse, ApiAuditLog } from '../../types/api';
+
+interface PolicyHistoryEntry {
+  id: string;
+  date: string;
+  author: string;
+  action: string;
+  key: string;
+  active: boolean;
+}
 
 export default function PoliciesFees() {
+  const toast = useToast();
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'attendance' | 'cancellation' | 'fees'>('attendance');
   const [policies, setPolicies] = useState<Record<string, string>>({});
+  const [originalPolicies, setOriginalPolicies] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [auditNote, setAuditNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const [versionHistory, setVersionHistory] = useState<PolicyHistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const fetchPolicies = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get('/admin/policies');
+      const data = await api.get<PoliciesResponse>('/admin/policies');
       const map: Record<string, string> = {};
-      (data.policies || []).forEach((p: any) => { map[p.key] = p.value; });
+      (data.policies || []).forEach((p: ApiPolicyConfig) => { map[p.key] = p.value; });
       setPolicies(map);
-    } catch (err) {
-      console.error('Failed to fetch policies:', err);
+      setOriginalPolicies(map);
+    } catch (err: unknown) {
+      toast.error('Failed to load policies', getErrorMessage(err));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { fetchPolicies(); }, [fetchPolicies]);
+
+  const fetchHistory = useCallback(async () => {
+    try {
+      setHistoryLoading(true);
+      const data = await api.get<AuditLogsResponse>('/admin/audit-logs?limit=10&action=update_policy');
+      const logs = (data.logs || []).map((log: ApiAuditLog, idx: number) => ({
+        id: log.id,
+        date: log.created_at ? new Date(log.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
+        author: log.user_name || log.user_phone || 'Admin',
+        action: log.action || 'Policy Update',
+        key: log.entity_id || '',
+        active: idx === 0,
+      }));
+      setVersionHistory(logs);
+    } catch (err: unknown) {
+      toast.error('Failed to load version history');
+      setVersionHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   const updatePolicy = (key: string, value: string) => {
     setPolicies(prev => ({ ...prev, [key]: value }));
@@ -36,15 +76,23 @@ export default function PoliciesFees() {
   const handleSave = async () => {
     try {
       setSaving(true);
-      const keys = Object.keys(policies);
-      for (const key of keys) {
+      // Only save keys whose values differ from the original loaded values
+      const changedKeys = Object.keys(policies).filter(key => policies[key] !== originalPolicies[key]);
+      if (changedKeys.length === 0) {
+        toast.success('No changes to save');
+        setSaveModalOpen(false);
+        setAuditNote('');
+        return;
+      }
+      for (const key of changedKeys) {
         await api.put(`/admin/policies/${key}`, { value: policies[key], auditNote });
       }
       setSaveModalOpen(false);
       setAuditNote('');
       fetchPolicies();
-    } catch (err) {
-      console.error('Failed to save:', err);
+      fetchHistory();
+    } catch (err: unknown) {
+      toast.error('Failed to save policies', getErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -242,27 +290,30 @@ export default function PoliciesFees() {
                 </h3>
               </div>
               <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
-                {[
-                  { v: 'v2.4', date: 'Current Active', author: 'System Admin', active: true },
-                  { v: 'v2.3', date: 'Jan 15, 2026', author: 'Ops Manager', active: false },
-                  { v: 'v2.2', date: 'Nov 01, 2025', author: 'System Admin', active: false },
-                  { v: 'v2.1', date: 'Aug 20, 2025', author: 'System Admin', active: false },
-                ].map((ver, i) => (
-                  <div key={i} className="p-4 hover:bg-slate-50 transition-colors">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className={`text-sm font-bold ${ver.active ? 'text-indigo-600' : 'text-slate-900'}`}>
-                        {ver.v}
-                      </span>
-                      {ver.active && (
-                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
-                          Active
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-500 font-medium">{ver.date}</p>
-                    <p className="text-xs text-slate-400 mt-1">Modified by {ver.author}</p>
+                {historyLoading ? (
+                  <div className="p-8 flex items-center justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
                   </div>
-                ))}
+                ) : versionHistory.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-slate-400">No policy changes recorded yet.</div>
+                ) : (
+                  versionHistory.map((ver) => (
+                    <div key={ver.id} className="p-4 hover:bg-slate-50 transition-colors">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-sm font-bold ${ver.active ? 'text-indigo-600' : 'text-slate-900'}`}>
+                          {ver.key || 'Policy Update'}
+                        </span>
+                        {ver.active && (
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
+                            Latest
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 font-medium">{ver.date}</p>
+                      <p className="text-xs text-slate-400 mt-1">Modified by {ver.author}</p>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>

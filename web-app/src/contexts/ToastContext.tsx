@@ -104,6 +104,7 @@ function ToastItem({ toast, onDismiss }: ToastItemProps) {
       <button
         onClick={() => onDismiss(toast.id)}
         className="text-slate-400 hover:text-slate-600 shrink-0"
+        aria-label="Dismiss"
       >
         <X className="w-4 h-4" />
       </button>

@@ -7,11 +7,12 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
+import type { LucideIcon, ShiftsResponse, BookingsResponse, DisputesResponse, ApiShift, ApiBooking, ApiDispute } from '../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
 interface DashboardData {
-  kpis: { label: string; value: string; icon: any; color: string; bg: string; alert?: boolean }[];
+  kpis: { label: string; value: string; icon: LucideIcon; color: string; bg: string; alert?: boolean }[];
   alerts: { id: number; type: string; message: string; action: string; time: string }[];
   schedule: { id: string; role: string; time: string; doctor: string; status: string; pay: string; geo: string }[];
 }
@@ -20,6 +21,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [viewState, setViewState] = useState<ViewState>('loading');
+  const [scheduleFilter, setScheduleFilter] = useState<'today' | 'tomorrow' | 'week'>('today');
   const [dashData, setDashData] = useState<DashboardData>({
     kpis: [],
     alerts: [],
@@ -31,21 +33,21 @@ export default function Dashboard() {
     try {
       // Fetch shifts, bookings, disputes in parallel
       const [shiftsRes, bookingsRes, disputesRes] = await Promise.all([
-        api.get<any>('/shifts?status=open&limit=100'),
-        api.get<any>('/bookings?limit=100'),
-        api.get<any>('/disputes?limit=100'),
+        api.get<ShiftsResponse>('/shifts?status=open&limit=100'),
+        api.get<BookingsResponse>('/bookings?limit=100'),
+        api.get<DisputesResponse>('/disputes?limit=100'),
       ]);
 
-      const shifts = shiftsRes?.shifts || shiftsRes || [];
-      const bookings = bookingsRes?.bookings || bookingsRes || [];
-      const disputes = disputesRes?.disputes || disputesRes || [];
+      const shifts = shiftsRes?.shifts || [];
+      const bookings = bookingsRes?.bookings || [];
+      const disputes = disputesRes?.disputes || [];
 
-      const openShifts = Array.isArray(shifts) ? shifts.filter((s: any) => s.status === 'open' || s.status === 'dispatching') : [];
-      const offersCount = Array.isArray(shifts) ? shifts.reduce((n: number, s: any) => n + (s.offers_count || 0), 0) : 0;
-      const confirmedBookings = Array.isArray(bookings) ? bookings.filter((b: any) => b.status === 'confirmed') : [];
-      const inProgressBookings = Array.isArray(bookings) ? bookings.filter((b: any) => b.status === 'in_progress') : [];
-      const completedBookings = Array.isArray(bookings) ? bookings.filter((b: any) => b.status === 'completed') : [];
-      const openDisputes = Array.isArray(disputes) ? disputes.filter((d: any) => d.status === 'open' || d.status === 'under_review') : [];
+      const openShifts = Array.isArray(shifts) ? shifts.filter((s: ApiShift) => s.status === 'open' || s.status === 'dispatching') : [];
+      const offersCount = Array.isArray(shifts) ? shifts.reduce((n: number, s: ApiShift) => n + (s.offers_count || 0), 0) : 0;
+      const confirmedBookings = Array.isArray(bookings) ? bookings.filter((b: ApiBooking) => b.status === 'confirmed') : [];
+      const inProgressBookings = Array.isArray(bookings) ? bookings.filter((b: ApiBooking) => b.status === 'in_progress') : [];
+      const completedBookings = Array.isArray(bookings) ? bookings.filter((b: ApiBooking) => b.status === 'completed') : [];
+      const openDisputes = Array.isArray(disputes) ? disputes.filter((d: ApiDispute) => d.status === 'open' || d.status === 'under_review') : [];
 
       const kpis = [
         { label: 'Open Shifts', value: String(openShifts.length), icon: Activity, color: 'text-blue-600', bg: 'bg-blue-100' },
@@ -54,7 +56,7 @@ export default function Dashboard() {
         { label: 'In-Progress', value: String(inProgressBookings.length), icon: Clock, color: 'text-amber-600', bg: 'bg-amber-100' },
         { label: 'Completed', value: String(completedBookings.length), icon: CheckSquare, color: 'text-slate-600', bg: 'bg-slate-100' },
         { label: 'Disputes Open', value: String(openDisputes.length), icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-100', alert: openDisputes.length > 0 },
-        { label: 'Pending Payments', value: '0', icon: Wallet, color: 'text-purple-600', bg: 'bg-purple-100' },
+        { label: 'Pending Payments', value: String(bookings.filter((b: ApiBooking) => b.status === 'pending_payment').length), icon: Wallet, color: 'text-purple-600', bg: 'bg-purple-100' },
       ];
 
       // Build alerts from recent notifications or disputes
@@ -78,8 +80,25 @@ export default function Dashboard() {
         });
       }
 
-      // Build schedule from today's bookings
-      const schedule = [...confirmedBookings, ...inProgressBookings].slice(0, 5).map((b: any, i: number) => ({
+      // Build schedule from bookings filtered by schedule filter
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const tomorrowStart = new Date(todayStart);
+      tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+      const tomorrowEnd = new Date(tomorrowStart);
+      tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
+      const weekEnd = new Date(todayStart);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+
+      const scheduleBookings = [...confirmedBookings, ...inProgressBookings].filter((b: ApiBooking) => {
+        if (!b.start_time) return true; // include if no start_time to avoid hiding data
+        const bStart = new Date(b.start_time);
+        if (scheduleFilter === 'today') return bStart >= todayStart && bStart < tomorrowStart;
+        if (scheduleFilter === 'tomorrow') return bStart >= tomorrowStart && bStart < tomorrowEnd;
+        return bStart >= todayStart && bStart < weekEnd; // week
+      });
+
+      const schedule = scheduleBookings.slice(0, 5).map((b: ApiBooking, i: number) => ({
         id: b.id || `B-${i}`,
         role: b.shift_role || b.role || 'Duty Doctor',
         time: b.start_time && b.end_time ? `${new Date(b.start_time).toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' })} - ${new Date(b.end_time).toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' })}` : 'TBD',
@@ -94,13 +113,13 @@ export default function Dashboard() {
     } catch {
       setViewState('error');
     }
-  }, []);
+  }, [scheduleFilter]);
 
   useEffect(() => {
     loadDashboard();
   }, [loadDashboard]);
 
-  const facilityName = user?.profile?.name || 'your facility';
+  const facilityName = (user?.profile && 'name' in user.profile ? user.profile.name : undefined) || 'your facility';
 
   // Render States
   if (viewState === 'loading') {
@@ -231,7 +250,7 @@ export default function Dashboard() {
       {/* KPIs Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {dashData.kpis.map((kpi, idx) => (
-          <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative overflow-hidden group hover:border-slate-300 transition-colors">
+          <div key={kpi.label} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative overflow-hidden group hover:border-slate-300 transition-colors">
             {kpi.alert && (
               <span className="absolute top-3 right-3 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
             )}
@@ -250,10 +269,14 @@ export default function Dashboard() {
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="flex items-center justify-between p-4 sm:px-6 border-b border-slate-200">
           <h2 className="text-lg font-bold text-slate-900">Today's Schedule</h2>
-          <select className="text-sm border-slate-200 rounded-lg text-slate-700 focus:ring-primary focus:border-primary py-1.5 pl-3 pr-8">
-            <option>Today</option>
-            <option>Tomorrow</option>
-            <option>This Week</option>
+          <select 
+            value={scheduleFilter}
+            onChange={(e) => setScheduleFilter(e.target.value as 'today' | 'tomorrow' | 'week')}
+            className="text-sm border-slate-200 rounded-lg text-slate-700 focus:ring-primary focus:border-primary py-1.5 pl-3 pr-8"
+          >
+            <option value="today">Today</option>
+            <option value="tomorrow">Tomorrow</option>
+            <option value="week">This Week</option>
           </select>
         </div>
         

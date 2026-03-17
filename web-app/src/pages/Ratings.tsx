@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useToast } from '../contexts/ToastContext';
 import { 
   Search, Filter, Star, UserCircle, RefreshCw, XCircle, 
   ChevronRight, CheckCircle, MessageSquare
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
+import type { ApiRating, ApiBooking, BookingsResponse, RatingsResponse } from '../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -39,13 +41,13 @@ export default function Ratings() {
     try {
       setViewState('loading');
       // Get completed bookings for this facility
-      const bookingsData = await api.get('/bookings?status=completed&limit=100');
-      const ratingsData = await api.get('/ratings?limit=100');
+      const bookingsData = await api.get<BookingsResponse>('/bookings?status=completed&limit=100');
+      const ratingsData = await api.get<RatingsResponse>('/ratings?limit=100');
       
-      const ratedBookingIds = new Set((ratingsData.ratings || []).map((r: any) => r.booking_id));
+      const ratedBookingIds = new Set((ratingsData.ratings || []).map((r: ApiRating) => r.booking_id));
       
-      const mapped: RatingItem[] = (bookingsData.bookings || []).map((b: any) => {
-        const rating = (ratingsData.ratings || []).find((r: any) => r.booking_id === b.id);
+      const mapped: RatingItem[] = (bookingsData.bookings || []).map((b: ApiBooking) => {
+        const rating = (ratingsData.ratings || []).find((r: ApiRating) => r.booking_id === b.id);
         return {
           id: b.id,
           bookingId: b.id,
@@ -53,7 +55,7 @@ export default function Ratings() {
           role: b.specialty_name || b.shift_title || 'General',
           date: new Date(b.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
           rating: rating?.score || null,
-          tags: rating?.tags ? JSON.parse(rating.tags) : [],
+          tags: rating?.tags ? (() => { try { return JSON.parse(rating.tags as string); } catch { return []; } })() : [],
           comment: rating?.comment || '',
           status: ratedBookingIds.has(b.id) ? 'Rated' : 'Pending Rating',
         };
@@ -71,7 +73,6 @@ export default function Ratings() {
       setRatings(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch ratings:', err);
       setViewState('error');
     }
   }, []);
@@ -97,7 +98,6 @@ export default function Ratings() {
     try {
       await api.post('/ratings', {
         bookingId: selectedBooking.bookingId,
-        ratedUserId: selectedBooking.id, // will be resolved server-side
         score: selectedStar,
         comment: ratingComment,
         tags: JSON.stringify(selectedTags),
@@ -105,8 +105,8 @@ export default function Ratings() {
       setRatingModalOpen(false);
       toast.success('Rating submitted');
       fetchRatings();
-    } catch (err: any) {
-      toast.error('Rating Failed', err.message || 'Failed to submit rating');
+    } catch (err: unknown) {
+      toast.error('Rating Failed', getErrorMessage(err));
     }
   };
 

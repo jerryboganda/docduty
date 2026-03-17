@@ -5,6 +5,8 @@
 
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
+import type { ApiDoctorProfile, ApiFacilityAccount, ApiUser, AuthLoginResponse } from '../types/api';
 
 interface User {
   id: string;
@@ -14,7 +16,7 @@ interface User {
   verificationStatus: string;
   email?: string;
   avatarUrl?: string | null;
-  profile?: any;
+  profile?: ApiDoctorProfile | ApiFacilityAccount;
 }
 
 interface AuthContextType {
@@ -40,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const data = await api.get<any>('/auth/me');
+      const data = await api.get<ApiUser>('/auth/me');
       if (data) {
         setUser({
           id: data.id,
@@ -69,27 +71,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (phone: string, password: string): Promise<{ success: boolean; role?: User['role']; error?: string }> => {
     try {
-      const data = await api.post<any>('/auth/login', { phone, password }, true);
+      const data = await api.post<AuthLoginResponse>('/auth/login', { phone, password }, true);
       api.setTokens(data.accessToken, data.refreshToken);
       setUser({
         id: data.user.id,
         phone: data.user.phone,
         role: data.user.role,
         status: data.user.status,
-        verificationStatus: data.user.verificationStatus || data.user.verification_status,
+        verificationStatus: data.user.verification_status,
         email: data.user.email,
-        avatarUrl: data.user.avatarUrl || data.user.avatar_url || null,
+        avatarUrl: data.user.avatar_url || null,
         profile: data.user.profile,
       });
       return { success: true, role: data.user.role };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Login failed' };
+    } catch (err: unknown) {
+      return { success: false, error: getErrorMessage(err) };
     }
   };
 
   const register = async (phone: string, password: string, role: string, fullName: string): Promise<{ success: boolean; error?: string }> => {
     try {
-      const data = await api.post<any>('/auth/register', { phone, password, role, fullName }, true);
+      const data = await api.post<AuthLoginResponse>('/auth/register', { phone, password, role, fullName }, true);
       api.setTokens(data.accessToken, data.refreshToken);
       setUser({
         id: data.user.id,
@@ -99,8 +101,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         verificationStatus: 'unverified',
       });
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Registration failed' };
+    } catch (err: unknown) {
+      return { success: false, error: getErrorMessage(err) };
     }
   };
 

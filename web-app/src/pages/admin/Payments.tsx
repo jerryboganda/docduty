@@ -5,10 +5,26 @@ import {
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { exportToCsv } from '../../lib/csv';
+import { useToast } from '../../contexts/ToastContext';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiPayout, PayoutsResponse } from '../../types/api';
+
+interface PayoutView {
+  id: string;
+  shortId: string;
+  bookingId: string;
+  facility: string;
+  doctor: string;
+  amount: number;
+  status: string;
+  date: string;
+  rawId: string;
+}
 
 export default function PaymentsOversight() {
-  const [selectedSettlement, setSelectedSettlement] = useState<any | null>(null);
-  const [settlements, setSettlements] = useState<any[]>([]);
+  const toast = useToast();
+  const [selectedSettlement, setSelectedSettlement] = useState<PayoutView | null>(null);
+  const [settlements, setSettlements] = useState<PayoutView[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [retrying, setRetrying] = useState(false);
@@ -18,20 +34,20 @@ export default function PaymentsOversight() {
   const fetchPayouts = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get('/admin/payouts');
-      setSettlements((data.payouts || []).map((p: any) => ({
+      const data = await api.get<PayoutsResponse>('/admin/payouts');
+      setSettlements((data.payouts || []).map((p: ApiPayout) => ({
         id: p.id,
         shortId: p.id?.slice(0, 8),
         bookingId: p.wallet_id?.slice(0, 8) || 'N/A',
-        facility: 'Platform',
+        facility: p.payment_method || 'Payout',
         doctor: p.full_name || p.phone || 'Doctor',
         amount: p.amount_pkr || 0,
         status: p.status === 'completed' ? 'Settled' : p.status === 'processing' ? 'Processing' : p.status === 'failed' ? 'Failed' : 'Pending',
         date: new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         rawId: p.id,
       })));
-    } catch (err) {
-      console.error('Failed to fetch payouts:', err);
+    } catch (err: unknown) {
+      toast.error('Failed to load payments', getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -53,8 +69,8 @@ export default function PaymentsOversight() {
       await api.put(`/admin/payouts/${selectedSettlement.rawId}/process`, { status: 'processing' });
       fetchPayouts();
       setSelectedSettlement(null);
-    } catch (err) {
-      console.error('Retry failed:', err);
+    } catch (err: unknown) {
+      toast.error('Retry failed', getErrorMessage(err));
     } finally {
       setRetrying(false);
     }
@@ -194,24 +210,22 @@ export default function PaymentsOversight() {
                 
                 <div className="space-y-3 font-mono text-sm">
                   <div className="flex justify-between border-b border-slate-200 pb-2">
-                    <span className="text-slate-500">Gross Shift Pay</span>
-                    <span className="text-slate-900">Rs 15,000.00</span>
+                    <span className="text-slate-500">Payout Amount</span>
+                    <span className="text-slate-900">Rs {selectedSettlement.amount.toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between border-b border-slate-200 pb-2">
-                    <span className="text-slate-500">Platform Fee (10%)</span>
-                    <span className="text-red-600">- Rs 1,500.00</span>
+                    <span className="text-slate-500">Doctor</span>
+                    <span className="text-slate-900">{selectedSettlement.doctor}</span>
                   </div>
                   <div className="flex justify-between border-b border-slate-200 pb-2">
-                    <span className="text-slate-500">Facility Escrow Held</span>
-                    <span className="text-slate-900">Rs 16,500.00</span>
-                  </div>
-                  <div className="flex justify-between border-b border-slate-200 pb-2">
-                    <span className="text-slate-500">Doctor Payout (Net)</span>
-                    <span className="text-emerald-600">+ Rs 15,000.00</span>
+                    <span className="text-slate-500">Status</span>
+                    <span className={selectedSettlement.status === 'Settled' ? 'text-emerald-600' : selectedSettlement.status === 'Failed' ? 'text-red-600' : 'text-amber-600'}>
+                      {selectedSettlement.status}
+                    </span>
                   </div>
                   <div className="flex justify-between pt-2 font-bold text-base">
-                    <span className="text-slate-900">Net Settlement</span>
-                    <span className="text-slate-900">Rs 15,000.00</span>
+                    <span className="text-slate-900">Date</span>
+                    <span className="text-slate-900">{selectedSettlement.date}</span>
                   </div>
                 </div>
               </div>
@@ -220,16 +234,16 @@ export default function PaymentsOversight() {
                 <h3 className="text-sm font-bold text-slate-900 mb-3">Transaction Metadata</h3>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Idempotency Key</span>
-                    <span className="font-mono text-xs text-slate-900 bg-slate-100 px-2 py-0.5 rounded">idem_9x8c7v6b5n4m</span>
+                    <span className="text-slate-500">Payout ID</span>
+                    <span className="font-mono text-xs text-slate-900 bg-slate-100 px-2 py-0.5 rounded">{selectedSettlement.rawId?.slice(0, 16) || 'N/A'}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Gateway Ref</span>
-                    <span className="font-mono text-xs text-slate-900 bg-slate-100 px-2 py-0.5 rounded">ch_1N4b5c6d7e8f9g0h</span>
+                    <span className="text-slate-500">Wallet ID</span>
+                    <span className="font-mono text-xs text-slate-900 bg-slate-100 px-2 py-0.5 rounded">{selectedSettlement.bookingId || 'N/A'}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Initiated At</span>
-                    <span className="text-slate-900">Feb 26, 2026 14:30:00 UTC</span>
+                    <span className="text-slate-500">Created At</span>
+                    <span className="text-slate-900">{selectedSettlement.date}</span>
                   </div>
                 </div>
               </div>
@@ -241,43 +255,47 @@ export default function PaymentsOversight() {
               <div className="bg-white rounded-xl border border-slate-200 p-6">
                 <h3 className="text-sm font-bold text-slate-900 mb-4">Payout Status</h3>
                 
-                <div className="space-y-4 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-200 before:to-transparent">
-                  <div className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
-                    <div className="flex items-center justify-center w-10 h-10 rounded-full border-4 border-white bg-emerald-100 text-emerald-600 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 z-10">
-                      <CheckCircle className="w-5 h-5" />
+                <div className="space-y-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 shrink-0 mt-0.5">
+                      <CheckCircle className="w-4 h-4" />
                     </div>
-                    <div className="w-[calc(100%-3rem)] md:w-[calc(50%-2rem)] p-3 rounded-xl border border-slate-200 bg-white shadow-sm">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="font-bold text-slate-900 text-sm">Escrow Funded</div>
-                        <div className="text-xs text-slate-500">Feb 20</div>
-                      </div>
-                      <p className="text-xs text-slate-500">Facility payment secured.</p>
-                    </div>
-                  </div>
-                  
-                  <div className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
-                    <div className="flex items-center justify-center w-10 h-10 rounded-full border-4 border-white bg-emerald-100 text-emerald-600 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 z-10">
-                      <CheckCircle className="w-5 h-5" />
-                    </div>
-                    <div className="w-[calc(100%-3rem)] md:w-[calc(50%-2rem)] p-3 rounded-xl border border-slate-200 bg-white shadow-sm">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="font-bold text-slate-900 text-sm">Shift Completed</div>
-                        <div className="text-xs text-slate-500">Feb 25</div>
-                      </div>
-                      <p className="text-xs text-slate-500">Attendance verified automatically.</p>
+                    <div>
+                      <p className="font-bold text-slate-900 text-sm">Created</p>
+                      <p className="text-xs text-slate-500">{selectedSettlement.date}</p>
                     </div>
                   </div>
 
-                  <div className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
-                    <div className="flex items-center justify-center w-10 h-10 rounded-full border-4 border-white bg-amber-100 text-amber-600 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 z-10">
-                      <Clock className="w-5 h-5" />
+                  <div className="flex items-start gap-3">
+                    <div className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0 mt-0.5 ${
+                      selectedSettlement.status === 'Pending' ? 'bg-slate-100 text-slate-400' : 'bg-emerald-100 text-emerald-600'
+                    }`}>
+                      {selectedSettlement.status === 'Pending' ? <Clock className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
                     </div>
-                    <div className="w-[calc(100%-3rem)] md:w-[calc(50%-2rem)] p-3 rounded-xl border border-amber-200 bg-amber-50 shadow-sm">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="font-bold text-amber-900 text-sm">Payout Processing</div>
-                        <div className="text-xs text-amber-700">Pending</div>
-                      </div>
-                      <p className="text-xs text-amber-800">Transfer initiated to doctor's bank.</p>
+                    <div>
+                      <p className="font-bold text-slate-900 text-sm">Processing</p>
+                      <p className="text-xs text-slate-500">{selectedSettlement.status === 'Pending' ? 'Waiting' : 'Transfer initiated'}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <div className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0 mt-0.5 ${
+                      selectedSettlement.status === 'Settled' ? 'bg-emerald-100 text-emerald-600' :
+                      selectedSettlement.status === 'Failed' ? 'bg-red-100 text-red-600' :
+                      'bg-slate-100 text-slate-400'
+                    }`}>
+                      {selectedSettlement.status === 'Settled' ? <CheckCircle className="w-4 h-4" /> : 
+                       selectedSettlement.status === 'Failed' ? <AlertTriangle className="w-4 h-4" /> :
+                       <Clock className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <p className={`font-bold text-sm ${selectedSettlement.status === 'Failed' ? 'text-red-900' : 'text-slate-900'}`}>
+                        {selectedSettlement.status === 'Settled' ? 'Completed' : selectedSettlement.status === 'Failed' ? 'Failed' : 'Pending'}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {selectedSettlement.status === 'Settled' ? 'Payout delivered' : 
+                         selectedSettlement.status === 'Failed' ? 'Transfer failed' : 'Awaiting processing'}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -289,7 +307,7 @@ export default function PaymentsOversight() {
                     <AlertTriangle className="w-4 h-4" /> Failure Reason
                   </h3>
                   <p className="text-xs text-red-800 leading-relaxed mb-3">
-                    Bank transfer rejected. Invalid account details provided by the doctor.
+                    Payout transfer failed. Please review the doctor's payment details and retry.
                   </p>
                   <button 
                     onClick={handleRetry}

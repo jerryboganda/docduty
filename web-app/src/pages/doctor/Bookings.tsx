@@ -5,6 +5,7 @@ import {
   CheckCircle, AlertCircle, RefreshCw, XCircle, Building2
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import type { ApiBooking, BookingsResponse } from '../../types/api';
 
 type TabType = 'Upcoming' | 'In Progress' | 'Completed' | 'Cancelled';
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
@@ -35,8 +36,8 @@ export default function DoctorBookings() {
   const fetchBookings = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/bookings?limit=100');
-      const mapped: Booking[] = (data.bookings || []).map((b: any) => {
+      const data = await api.get<BookingsResponse>('/bookings?limit=100');
+      const mapped: Booking[] = (data.bookings || []).map((b: ApiBooking) => {
         const start = b.start_time ? new Date(b.start_time) : null;
         const end = b.end_time ? new Date(b.end_time) : null;
         return {
@@ -53,7 +54,6 @@ export default function DoctorBookings() {
       setBookings(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch bookings:', err);
       setViewState('error');
     }
   }, []);
@@ -77,6 +77,21 @@ export default function DoctorBookings() {
       <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
         <RefreshCw className="w-10 h-10 text-emerald-600 animate-spin" />
         <p className="text-slate-500 font-medium">Loading bookings...</p>
+      </div>
+    );
+  }
+
+  if (viewState === 'error') {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
+        <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-2">
+          <XCircle className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-slate-900">Connection Error</h2>
+        <p className="text-slate-500 text-center max-w-md">Unable to load bookings. Please check your connection.</p>
+        <button onClick={() => fetchBookings()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition-colors">
+          Retry
+        </button>
       </div>
     );
   }

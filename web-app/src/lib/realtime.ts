@@ -1,6 +1,7 @@
 /**
  * Soketi/Pusher-compatible realtime client singleton.
  * If realtime is unavailable or disabled, consumers transparently fall back to polling.
+ * Supports exponential backoff reconnection on transient failures.
  */
 
 import Pusher from 'pusher-js';
@@ -8,6 +9,11 @@ import Pusher from 'pusher-js';
 let pusherInstance: Pusher | null = null;
 let connectionAttempted = false;
 let fallbackLogged = false;
+let retryCount = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+const MAX_RETRIES = 5;
+const BASE_RETRY_MS = 2000; // 2s, 4s, 8s, 16s, 32s
 
 const SOKETI_HOST = import.meta.env.VITE_SOKETI_HOST || 'localhost';
 const SOKETI_PORT = parseInt(import.meta.env.VITE_SOKETI_PORT || '6001', 10);
@@ -17,7 +23,39 @@ const REALTIME_ENABLED = String(import.meta.env.VITE_ENABLE_REALTIME || 'false')
 function logRealtimeFallback(reason: string): void {
   if (fallbackLogged) return;
   fallbackLogged = true;
-  console.warn(`[Realtime] ${reason}; using polling fallback`);
+  if (import.meta.env.DEV) {
+    console.warn(`[Realtime] ${reason}; using polling fallback`);
+  }
+}
+
+function scheduleReconnect(): void {
+  if (retryCount >= MAX_RETRIES) {
+    logRealtimeFallback(`max retries (${MAX_RETRIES}) exceeded`);
+    return;
+  }
+  if (retryTimer) return; // already scheduled
+
+  const delay = BASE_RETRY_MS * Math.pow(2, retryCount);
+  retryCount++;
+  if (import.meta.env.DEV) {
+    console.warn(`[Realtime] Reconnecting in ${delay}ms (attempt ${retryCount}/${MAX_RETRIES})`);
+  }
+
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    connectionAttempted = false;
+    fallbackLogged = false;
+    getRealtimeClient(); // attempt reconnection
+  }, delay);
+}
+
+function handleConnectionFailure(reason: string): void {
+  if (import.meta.env.DEV) {
+    console.warn(`[Realtime] ${reason}`);
+  }
+  pusherInstance?.disconnect();
+  pusherInstance = null;
+  scheduleReconnect();
 }
 
 /**
@@ -45,16 +83,17 @@ export function getRealtimeClient(): Pusher | null {
       cluster: 'mt1',
     });
 
+    pusherInstance.connection.bind('connected', () => {
+      // Reset retry counter on successful connection
+      retryCount = 0;
+    });
+
     pusherInstance.connection.bind('error', () => {
-      logRealtimeFallback('connection error');
-      pusherInstance?.disconnect();
-      pusherInstance = null;
+      handleConnectionFailure('connection error');
     });
 
     pusherInstance.connection.bind('unavailable', () => {
-      logRealtimeFallback('service unavailable');
-      pusherInstance?.disconnect();
-      pusherInstance = null;
+      handleConnectionFailure('service unavailable');
     });
 
     return pusherInstance;
@@ -79,7 +118,7 @@ export function unsubscribeFromChannel(channelName: string) {
 
 export function useRealtimeNotifications(
   userId: string | undefined,
-  onNotification: (data: any) => void
+  onNotification: (data: Record<string, unknown>) => void
 ) {
   if (!userId) return;
 
@@ -96,7 +135,7 @@ export function useRealtimeNotifications(
 
 export function useRealtimeMessages(
   bookingId: string | undefined,
-  onMessage: (data: any) => void
+  onMessage: (data: Record<string, unknown>) => void
 ) {
   if (!bookingId) return;
 

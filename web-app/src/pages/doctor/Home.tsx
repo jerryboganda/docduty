@@ -6,7 +6,9 @@ import {
   Filter, Search, ChevronRight, RefreshCw, XCircle
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
 import { useDoctorVerification } from '../../hooks/useDoctorVerification';
+import type { ApiShift, ApiSkill, ShiftsResponse } from '../../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -17,10 +19,10 @@ interface Offer {
   date: string;
   time: string;
   pay: string;
-  distance: string;
+  distance: string | null;
   urgency: string;
   requirements: string[];
-  expires: string;
+  expires: string | null;
 }
 
 export default function DoctorHome() {
@@ -33,12 +35,45 @@ export default function DoctorHome() {
   const fetchOffers = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/shifts/feed?limit=50');
-      const mapped: Offer[] = (data.shifts || []).map((s: any) => {
+      const data = await api.get<ShiftsResponse>('/shifts/feed?limit=50');
+      const mapped: Offer[] = (data.shifts || []).map((s: ApiShift) => {
         const start = s.start_time ? new Date(s.start_time) : null;
         const end = s.end_time ? new Date(s.end_time) : null;
         const dateStr = start ? (start.toDateString() === new Date().toDateString() ? 'Today' : start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })) : 'N/A';
         const timeStr = start && end ? `${start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })} - ${end.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}` : 'N/A';
+        const requirementsSource = s.skills ?? s.required_skills ?? [];
+        const requirements: string[] = Array.isArray(requirementsSource)
+          ? requirementsSource.map((req: ApiSkill | string) => (typeof req === 'string' ? req : req?.name)).filter(Boolean) as string[]
+          : [];
+        // Compute distance from API data or leave unknown
+        const distanceStr = s.distance_km != null
+          ? `${Number(s.distance_km).toFixed(1)} km`
+          : null;
+
+        // Compute time-until-expiry from offer_expires_at or start_time
+        let expiresStr: string | null = null;
+        const expiresAt = s.offer_expires_at;
+        if (expiresAt) {
+          const diffMs = new Date(expiresAt).getTime() - Date.now();
+          if (diffMs > 0) {
+            const diffMins = Math.round(diffMs / 60000);
+            expiresStr = diffMins >= 60
+              ? `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`
+              : `${diffMins}m`;
+          } else {
+            expiresStr = 'Expired';
+          }
+        } else if (start) {
+          const diffMs = start.getTime() - Date.now();
+          if (diffMs > 0) {
+            const diffHrs = Math.floor(diffMs / 3600000);
+            const diffMins = Math.round((diffMs % 3600000) / 60000);
+            expiresStr = diffHrs > 0
+              ? `${diffHrs}h ${diffMins}m`
+              : `${diffMins}m`;
+          }
+        }
+
         return {
           id: s.id,
           facility: s.facility_name || 'Facility',
@@ -46,16 +81,15 @@ export default function DoctorHome() {
           date: dateStr,
           time: timeStr,
           pay: `Rs. ${(s.payout_pkr || 0).toLocaleString()}`,
-          distance: 'Nearby',
-          urgency: s.urgency === 'critical' ? 'Urgent' : s.urgency === 'high' ? 'High' : 'Standard',
-          requirements: s.required_skills ? JSON.parse(s.required_skills) : [],
-          expires: '2 hours',
+          distance: distanceStr,
+          urgency: s.urgency === 'critical' ? 'Urgent' : s.urgency === 'urgent' ? 'High' : 'Standard',
+          requirements,
+          expires: expiresStr,
         };
       });
       setOffers(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch offers:', err);
       setViewState('error');
     }
   }, []);
@@ -77,8 +111,8 @@ export default function DoctorHome() {
       await api.post('/bookings/accept', { shiftId });
       toast.success('Shift accepted!', 'Check your bookings for details.');
       fetchOffers();
-    } catch (err: any) {
-      toast.error('Accept Failed', err.message || 'Failed to accept shift');
+    } catch (err: unknown) {
+      toast.error('Accept Failed', getErrorMessage(err));
     }
   };
 
@@ -166,9 +200,15 @@ export default function DoctorHome() {
                           <AlertCircle className="w-3 h-3" /> Urgent
                         </span>
                       )}
-                      <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-100">
-                        <Timer className="w-3 h-3" /> Expires in {offer.expires}
-                      </span>
+                      {offer.expires && (
+                        <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded border ${
+                          offer.expires === 'Expired'
+                            ? 'text-red-600 bg-red-50 border-red-100'
+                            : 'text-amber-600 bg-amber-50 border-amber-100'
+                        }`}>
+                          <Timer className="w-3 h-3" /> {offer.expires === 'Expired' ? 'Expired' : `Expires in ${offer.expires}`}
+                        </span>
+                      )}
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">{offer.role}</h3>
                     <p className="text-sm text-slate-600 font-medium">{offer.facility}</p>
@@ -180,7 +220,7 @@ export default function DoctorHome() {
 
                 <div className="grid grid-cols-2 gap-3 mb-4 text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100">
                   <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-slate-400" /> <span>{offer.date} • {offer.time}</span></div>
-                  <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-slate-400" /> <span>{offer.distance} away</span></div>
+                  <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-slate-400" /> <span>{offer.distance ? `${offer.distance} away` : 'Distance N/A'}</span></div>
                 </div>
 
                 <div className="flex flex-wrap gap-2 mb-4">

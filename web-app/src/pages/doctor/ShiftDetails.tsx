@@ -6,12 +6,14 @@ import {
   ShieldAlert, CheckCircle, Star, Info, X, RefreshCw, XCircle
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
 import { useDoctorVerification } from '../../hooks/useDoctorVerification';
+import type { ApiShift, ApiSkill } from '../../types/api';
 
 interface ShiftData {
   id: string;
   facility: string;
-  facilityRating: string;
+  facilityRating: string | null;
   address: string;
   role: string;
   date: string;
@@ -42,28 +44,27 @@ export default function DoctorShiftDetails() {
     try {
       setLoading(true);
       setError('');
-      const data = await api.get(`/shifts/${id}`);
-      const s = data.shift || data;
+      const data = await api.get<{ shift: ApiShift & { facility_rating?: number | null; notes?: string } }>(`/shifts/${id}`);
+      const s = data.shift;
       const start = s.start_time ? new Date(s.start_time) : null;
       const end = s.end_time ? new Date(s.end_time) : null;
       const hours = start && end ? Math.round((end.getTime() - start.getTime()) / 3600000) : 0;
       setShift({
         id: s.id,
         facility: s.facility_name || 'Facility',
-        facilityRating: s.facility_rating || '4.5',
+        facilityRating: s.facility_rating ? String(s.facility_rating) : null,
         address: s.location_address || s.location_name || 'N/A',
         role: s.specialty_name || s.title || 'General',
         date: start ? start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
         time: start && end ? `${start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })} - ${end.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })} (${hours} hrs)` : 'N/A',
         pay: `Rs. ${(s.payout_pkr || 0).toLocaleString()}`,
         distance: '—',
-        requirements: (s.skills || s.required_skills || []).map((sk: any) => sk.name || sk),
+        requirements: (s.skills || s.required_skills || []).map((sk: ApiSkill | string) => typeof sk === 'string' ? sk : sk.name),
         notes: s.notes || 'No additional notes.',
         allowCounter: s.counter_offer_allowed !== false,
       });
-    } catch (err: any) {
-      console.error('Failed to fetch shift:', err);
-      setError(err.message || 'Failed to load shift details');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -79,12 +80,12 @@ export default function DoctorShiftDetails() {
     }
     try {
       setSubmitting(true);
-      await api.post('/bookings/accept', { shift_id: shift.id });
+      await api.post('/bookings/accept', { shiftId: shift.id, shift_id: shift.id });
       setAcceptModalOpen(false);
       toast.success('Shift accepted!', 'Check your bookings for details.');
       navigate('/doctor/bookings');
-    } catch (err: any) {
-      toast.error('Accept Failed', err.message || 'Failed to accept shift');
+    } catch (err: unknown) {
+      toast.error('Accept Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -96,15 +97,27 @@ export default function DoctorShiftDetails() {
       toast.error('Verification Required', summary?.blockingReason || 'Complete verification before sending counter offers.');
       return;
     }
+    const parsedAmount = Number.parseInt(counterAmount, 10);
+    if (!Number.isInteger(parsedAmount) || parsedAmount <= 0) {
+      toast.error('Invalid amount', 'Enter a valid counter amount in PKR');
+      return;
+    }
     try {
       setSubmitting(true);
-      await api.post('/bookings/counter', { shift_id: shift.id, proposed_amount: parseInt(counterAmount), note: counterNote });
+      await api.post('/bookings/counter', {
+        shiftId: shift.id,
+        shift_id: shift.id,
+        counterAmountPkr: parsedAmount,
+        proposed_amount: parsedAmount,
+        note: counterNote,
+      });
       setCounterModalOpen(false);
+      setCounterAmount('');
       setCounterNote('');
       toast.success('Counter offer sent');
       navigate('/doctor');
-    } catch (err: any) {
-      toast.error('Counter Failed', err.message || 'Failed to submit counter offer');
+    } catch (err: unknown) {
+      toast.error('Counter Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -159,9 +172,11 @@ export default function DoctorShiftDetails() {
               <h1 className="text-xl font-bold text-slate-900">{shift.role}</h1>
               <div className="flex items-center gap-2 mt-1">
                 <p className="text-sm font-medium text-slate-600">{shift.facility}</p>
-                <span className="flex items-center gap-1 text-xs font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                  <Star className="w-3 h-3 fill-amber-500" /> {shift.facilityRating}
-                </span>
+                {shift.facilityRating && (
+                  <span className="flex items-center gap-1 text-xs font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                    <Star className="w-3 h-3 fill-amber-500" /> {shift.facilityRating}
+                  </span>
+                )}
               </div>
             </div>
             <div className="text-right">

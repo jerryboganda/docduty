@@ -5,14 +5,35 @@
 
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../database/schema.js';
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken, authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { validatePhone } from '../middleware/validation.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { logAudit } from '../utils/audit.js';
+import { logger } from '../utils/logger.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { getOrCreateDoctorVerification, mapCanonicalStatusToLegacy } from '../utils/doctorVerification.js';
+import type { UserRow, OtpCodeRow } from '../types.js';
+
+/** Partial user row returned by the /me endpoint (no password_hash). */
+interface UserMeRow {
+  id: string;
+  phone: string;
+  email: string | null;
+  role: 'doctor' | 'facility_admin' | 'platform_admin';
+  status: 'pending' | 'active' | 'suspended' | 'banned';
+  verification_status: string;
+  avatar_url: string | null;
+  created_at: string;
+}
+
+/** Partial user row returned by the /password endpoint. */
+interface UserPasswordRow {
+  id: string;
+  password_hash: string;
+}
 
 export const authRouter = Router();
 
@@ -35,8 +56,18 @@ authRouter.post('/register', rateLimit(5, 60000), asyncHandler(async (req: Reque
       return;
     }
 
-    if (password.length < 6) {
-      res.status(400).json({ error: 'Password must be at least 6 characters' });
+    // M-007: Input length limits
+    if (typeof fullName === 'string' && fullName.length > 200) {
+      res.status(400).json({ error: 'fullName must be at most 200 characters' });
+      return;
+    }
+
+    if (password.length < 8) {
+      res.status(400).json({ error: 'Password must be at least 8 characters' });
+      return;
+    }
+    if (password.length > 128) {
+      res.status(400).json({ error: 'Password must be at most 128 characters' });
       return;
     }
 
@@ -48,7 +79,7 @@ authRouter.post('/register', rateLimit(5, 60000), asyncHandler(async (req: Reque
     }
 
     const userId = uuidv4();
-    const passwordHash = bcrypt.hashSync(password, 10);
+    const passwordHash = await bcrypt.hash(password, 10);
 
     await db.transaction(async () => {
       await db.prepare(`
@@ -78,7 +109,7 @@ authRouter.post('/register', rateLimit(5, 60000), asyncHandler(async (req: Reque
     await db.prepare(`
       INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
       VALUES (?, ?, ?, CURRENT_TIMESTAMP + INTERVAL '30 days')
-    `).run(uuidv4(), userId, bcrypt.hashSync(refreshToken, 5));
+    `).run(uuidv4(), userId, await bcrypt.hash(refreshToken, 5));
 
     await logAudit({ userId, action: 'register', entityType: 'user', entityId: userId });
 
@@ -87,8 +118,9 @@ authRouter.post('/register', rateLimit(5, 60000), asyncHandler(async (req: Reque
       accessToken,
       refreshToken,
     });
-  } catch (err: any) {
-    console.error('[Auth Register]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Registration failed', { error: message });
     res.status(500).json({ error: 'Registration failed' });
   }
 }));
@@ -103,20 +135,21 @@ authRouter.post('/login', rateLimit(10, 60000), asyncHandler(async (req: Request
     }
 
     const db = getDb();
-    const user = await db.prepare('SELECT * FROM users WHERE phone = ?').get(phone) as any;
+    const user = await db.prepare('SELECT * FROM users WHERE phone = ?').get(phone) as UserRow | undefined;
 
-    if (!user) {
+    // M-008: Timing side-channel fix — always run bcrypt.compare to prevent
+    // attackers from distinguishing existing vs non-existing accounts by response time
+    const dummyHash = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+    const hashToCompare = user?.password_hash ?? dummyHash;
+    const passwordValid = await bcrypt.compare(password, hashToCompare);
+
+    if (!user || !passwordValid) {
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
     if (user.status === 'suspended' || user.status === 'banned') {
       res.status(403).json({ error: `Account is ${user.status}` });
-      return;
-    }
-
-    if (!bcrypt.compareSync(password, user.password_hash)) {
-      res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
@@ -127,7 +160,7 @@ authRouter.post('/login', rateLimit(10, 60000), asyncHandler(async (req: Request
     await db.prepare(`
       INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
       VALUES (?, ?, ?, CURRENT_TIMESTAMP + INTERVAL '30 days')
-    `).run(uuidv4(), user.id, bcrypt.hashSync(refreshToken, 5));
+    `).run(uuidv4(), user.id, await bcrypt.hash(refreshToken, 5));
 
     let profile = null;
     if (user.role === 'doctor') {
@@ -158,8 +191,9 @@ authRouter.post('/login', rateLimit(10, 60000), asyncHandler(async (req: Request
       accessToken,
       refreshToken,
     });
-  } catch (err: any) {
-    console.error('[Auth Login]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Login failed', { error: message });
     res.status(500).json({ error: 'Login failed' });
   }
 }));
@@ -173,17 +207,24 @@ authRouter.post('/request-otp', rateLimit(3, 60000), asyncHandler(async (req: Re
     }
 
     const db = getDb();
-    const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+    const otpCode = String(crypto.randomInt(100000, 1000000));
+
+    // H-002: Hash OTP before storage
+    const otpHash = crypto.createHash('sha256').update(otpCode).digest('hex');
 
     await db.prepare(`
       INSERT INTO otp_codes (id, phone, code, expires_at)
       VALUES (?, ?, ?, CURRENT_TIMESTAMP + INTERVAL '5 minutes')
-    `).run(uuidv4(), phone, otpCode);
+    `).run(uuidv4(), phone, otpHash);
 
-    console.log(`[OTP] Code for ${phone}: ${otpCode}`);
+    // TODO: Send OTP via SMS provider (Twilio) — do NOT log OTP in production
+    if (process.env.NODE_ENV === 'development') {
+      logger.debug('OTP generated', { phone, code: otpCode });
+    }
     res.json({ message: 'OTP sent successfully', expiresInSeconds: 300 });
-  } catch (err: any) {
-    console.error('[Auth OTP]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('OTP request failed', { error: message });
     res.status(500).json({ error: 'Failed to send OTP' });
   }
 }));
@@ -197,11 +238,13 @@ authRouter.post('/verify-otp', rateLimit(5, 60000), asyncHandler(async (req: Req
     }
 
     const db = getDb();
+    // H-002: Hash the submitted OTP to compare against stored hash
+    const codeHash = crypto.createHash('sha256').update(String(code)).digest('hex');
     const otp = await db.prepare(`
       SELECT * FROM otp_codes
       WHERE phone = ? AND code = ? AND used = FALSE AND expires_at > CURRENT_TIMESTAMP
       ORDER BY created_at DESC LIMIT 1
-    `).get(phone, code) as any;
+    `).get(phone, codeHash) as OtpCodeRow | undefined;
 
     if (!otp) {
       res.status(400).json({ error: 'Invalid or expired OTP' });
@@ -210,8 +253,9 @@ authRouter.post('/verify-otp', rateLimit(5, 60000), asyncHandler(async (req: Req
 
     await db.prepare('UPDATE otp_codes SET used = TRUE WHERE id = ?').run(otp.id);
     res.json({ verified: true, phone });
-  } catch (err: any) {
-    console.error('[Auth Verify OTP]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('OTP verification failed', { error: message });
     res.status(500).json({ error: 'OTP verification failed' });
   }
 }));
@@ -232,7 +276,12 @@ authRouter.post('/refresh', asyncHandler(async (req: Request, res: Response) => 
       ORDER BY created_at DESC
     `).all(decoded.userId) as Array<{ token_hash: string }>;
 
-    const matchesStoredToken = storedTokens.some((row) => bcrypt.compareSync(refreshToken, row.token_hash));
+    const matchesStoredToken = await (async () => {
+      for (const row of storedTokens) {
+        if (await bcrypt.compare(refreshToken, row.token_hash)) return true;
+      }
+      return false;
+    })();
     if (!matchesStoredToken) {
       res.status(401).json({ error: 'Invalid refresh token' });
       return;
@@ -256,7 +305,7 @@ authRouter.get('/me', authMiddleware, asyncHandler(async (req: AuthRequest, res:
     const user = await db.prepare(`
       SELECT id, phone, email, role, status, verification_status, avatar_url, created_at
       FROM users WHERE id = ?
-    `).get(req.user!.userId) as any;
+    `).get(req.user!.userId) as UserMeRow | undefined;
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -288,8 +337,9 @@ authRouter.get('/me', authMiddleware, asyncHandler(async (req: AuthRequest, res:
     }
 
     res.json({ ...user, profile });
-  } catch (err: any) {
-    console.error('[Auth Me]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Get user info failed', { error: message });
     res.status(500).json({ error: 'Failed to get user info' });
   }
 }));
@@ -309,14 +359,14 @@ authRouter.put('/password', authMiddleware, asyncHandler(async (req: AuthRequest
     }
 
     const db = getDb();
-    const user = await db.prepare('SELECT id, password_hash FROM users WHERE id = ?').get(req.user!.userId) as any;
+    const user = await db.prepare('SELECT id, password_hash FROM users WHERE id = ?').get(req.user!.userId) as UserPasswordRow | undefined;
 
-    if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
+    if (!user || !await bcrypt.compare(currentPassword, user.password_hash)) {
       res.status(401).json({ error: 'Current password is incorrect' });
       return;
     }
 
-    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    const passwordHash = await bcrypt.hash(newPassword, 10);
     await db.transaction(async () => {
       await db.prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run(passwordHash, req.user!.userId);
@@ -330,8 +380,9 @@ authRouter.put('/password', authMiddleware, asyncHandler(async (req: AuthRequest
     })();
 
     res.json({ message: 'Password updated successfully' });
-  } catch (err: any) {
-    console.error('[Auth Password]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Password update failed', { error: message });
     res.status(500).json({ error: 'Failed to update password' });
   }
 }));
@@ -342,8 +393,9 @@ authRouter.post('/logout', authMiddleware, asyncHandler(async (req: AuthRequest,
     await db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(req.user!.userId);
     await logAudit({ userId: req.user!.userId, action: 'logout', entityType: 'user', entityId: req.user!.userId });
     res.json({ message: 'Logged out successfully' });
-  } catch (err: any) {
-    console.error('[Auth Logout]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Logout failed', { error: message });
     res.status(500).json({ error: 'Logout failed' });
   }
 }));

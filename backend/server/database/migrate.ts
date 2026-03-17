@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Pool, type PoolClient } from 'pg';
 import { env, getPgSslConfig } from '../config.js';
 import { getPgMemPool, isPgMemUrl } from './pgmem.js';
+import { logger } from '../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, 'migrations');
@@ -134,14 +135,10 @@ export async function runMigrations(): Promise<{ applied: string[]; pending: str
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runMigrations()
     .then(({ applied, pending }) => {
-      console.log(JSON.stringify({
-        status: 'ok',
-        applied,
-        pending,
-      }, null, 2));
+      logger.info('Migration complete', { status: 'ok', applied, pending });
     })
     .catch((error: Error) => {
-      console.error('[Migrations]', error.message);
+      logger.error('Migration failed', { error: error.message });
       process.exitCode = 1;
     });
 }

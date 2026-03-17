@@ -6,8 +6,29 @@ import {
 } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
 import { useAuth } from '../contexts/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
+import type { ApiFacilityLocation, FacilityLocationsResponse } from '../types/api';
+
+interface UserPreferences {
+  push_notifications: boolean;
+  email_notifications: boolean;
+  sms_notifications: boolean;
+  marketing_emails: boolean;
+}
+
+/** Profile response from GET /users/profile */
+interface ProfileResponse {
+  email?: string;
+  profile?: {
+    name?: string;
+    facility_name?: string;
+    full_name?: string;
+    registration_number?: string;
+    locations?: ApiFacilityLocation[];
+  };
+}
 
 type ViewState = 'loading' | 'error' | 'success';
 
@@ -37,7 +58,7 @@ function NotificationsTab() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await api.get('/users/preferences');
+        const data = await api.get<UserPreferences>('/users/preferences');
         setPushNotifs(!!data.push_notifications);
         setEmailNotifs(!!data.email_notifications);
         setSmsNotifs(!!data.sms_notifications);
@@ -120,16 +141,16 @@ export default function Settings() {
   const fetchSettings = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/users/profile');
+      const data = await api.get<ProfileResponse>('/users/profile');
       setProfile({
-        facilityName: data.profile?.name || data.profile?.facility_name || data.profile?.full_name || user?.profile?.facilityName || '',
+        facilityName: data.profile?.name || data.profile?.facility_name || data.profile?.full_name || (user?.profile && 'name' in user.profile ? user.profile.name : '') || '',
         email: data.email || '',
         registrationNumber: data.profile?.registration_number || 'N/A',
       });
       // Fetch locations
       try {
-        const locData = await api.get('/facilities/locations');
-        setLocations((locData.locations || []).map((l: any) => ({
+        const locData = await api.get<FacilityLocationsResponse>('/facilities/locations');
+        setLocations((locData.locations || []).map((l: ApiFacilityLocation) => ({
           id: l.id,
           name: l.name,
           address: l.address || '',
@@ -137,7 +158,7 @@ export default function Settings() {
           qrActive: !!l.qr_secret,
         })));
       } catch {
-        setLocations((data.profile?.locations || []).map((l: any) => ({
+        setLocations((data.profile?.locations || []).map((l: ApiFacilityLocation) => ({
           id: l.id,
           name: l.name,
           address: l.address || '',
@@ -147,7 +168,6 @@ export default function Settings() {
       }
       setViewState('success');
     } catch (err) {
-      console.error('Failed to load settings:', err);
       setViewState('error');
     }
   }, [user]);
@@ -159,8 +179,8 @@ export default function Settings() {
       setSaving(true);
       await api.put('/users/profile', { name: profile.facilityName, email: profile.email });
       toast.success('Profile saved successfully');
-    } catch (err: any) {
-      toast.error('Save Failed', err.message || 'Failed to save profile');
+    } catch (err: unknown) {
+      toast.error('Save Failed', getErrorMessage(err));
     } finally {
       setSaving(false);
     }

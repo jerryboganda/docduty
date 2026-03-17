@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
 import { useAuth } from '../contexts/AuthContext';
+import type { ApiVerificationDocument } from '../types/api';
 
 export type DoctorVerificationStatus =
   | 'NOT_STARTED'
@@ -27,7 +29,7 @@ export interface DoctorVerificationSummary {
   rejectionReasonText?: string | null;
   resubmissionReasonText?: string | null;
   missingItems: string[];
-  flaggedItems: Array<Record<string, any>>;
+  flaggedItems: Array<Record<string, unknown>>;
   badge: string;
   title: string;
   description: string;
@@ -36,9 +38,9 @@ export interface DoctorVerificationSummary {
   canEditVerification: boolean;
   canSubmitDocuments: boolean;
   blockingReason: string | null;
-  documents: Array<Record<string, any>>;
-  draftData: Record<string, any>;
-  submittedSnapshot: Record<string, any> | null;
+  documents: ApiVerificationDocument[];
+  draftData: Record<string, unknown>;
+  submittedSnapshot: Record<string, unknown> | null;
 }
 
 export function useDoctorVerification() {
@@ -47,8 +49,10 @@ export function useDoctorVerification() {
   const [isLoading, setIsLoading] = useState<boolean>(!!user && user.role === 'doctor');
   const [error, setError] = useState<string | null>(null);
 
+  const userRole = user?.role;
+
   const refresh = useCallback(async () => {
-    if (!user || user.role !== 'doctor') {
+    if (userRole !== 'doctor') {
       setSummary(null);
       setIsLoading(false);
       return;
@@ -59,12 +63,12 @@ export function useDoctorVerification() {
       setError(null);
       const data = await api.get<DoctorVerificationSummary>('/doctor/verification-summary');
       setSummary(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load doctor verification');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setIsLoading(false);
     }
-  }, [user]);
+  }, [userRole]);
 
   useEffect(() => {
     void refresh();

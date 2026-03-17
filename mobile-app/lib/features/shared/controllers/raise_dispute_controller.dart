@@ -14,6 +14,17 @@ class RaiseDisputeController extends GetxController {
 
   late String bookingId;
 
+  /// Maps human-readable dispute reasons to API enum values.
+  /// Backend accepts: no_show, late, duty_mismatch, facility_issue, payment, other
+  static const Map<String, String> _reasonToApiType = {
+    'Payment issue': 'payment',
+    'Shift cancellation': 'late',
+    'No-show by facility': 'no_show',
+    'Incorrect booking details': 'duty_mismatch',
+    'Safety concern': 'facility_issue',
+    'Other': 'other',
+  };
+
   final disputeReasons = [
     'Payment issue',
     'Shift cancellation',
@@ -53,7 +64,7 @@ class RaiseDisputeController extends GetxController {
       isLoading.value = true;
       await _disputeService.raiseDispute(
         bookingId: bookingId,
-        type: selectedReason.value,
+        type: _reasonToApiType[selectedReason.value] ?? 'other',
         description: descriptionController.text.trim(),
       );
       Get.back();

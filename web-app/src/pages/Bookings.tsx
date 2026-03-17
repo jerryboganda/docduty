@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { 
   Search, Filter, Calendar, Clock, MapPin, 
-  UserCircle, CheckCircle, AlertCircle, RefreshCw, XCircle, ChevronRight, ShieldCheck
+  UserCircle, CheckCircle, RefreshCw, XCircle, ChevronRight, ShieldCheck
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { BOOKING_STATUS_LABEL, getBookingTabColor } from '../lib/statusMaps';
+import type { ApiBooking, BookingsResponse } from '../types/api';
 
 type TabType = 'Upcoming' | 'In Progress' | 'Completed' | 'Cancelled' | 'No-show flagged';
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
@@ -47,8 +48,8 @@ export default function Bookings() {
   const fetchBookings = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/bookings?limit=100');
-      const mapped: Booking[] = (data.bookings || []).map((b: any) => {
+      const data = await api.get<BookingsResponse>('/bookings?limit=100');
+      const mapped: Booking[] = (data.bookings || []).map((b: ApiBooking) => {
         const start = b.start_time ? new Date(b.start_time) : null;
         const end = b.end_time ? new Date(b.end_time) : null;
         const dateStr = start ? start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
@@ -69,7 +70,6 @@ export default function Bookings() {
       setBookings(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch bookings:', err);
       setViewState('error');
     }
   }, []);

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { 
-  Search, Filter, AlertTriangle, MessageSquare, 
-  FileText, ChevronRight, CheckCircle, XCircle, RefreshCw
+  Search, Filter, AlertTriangle, 
+  ChevronRight, CheckCircle, XCircle, RefreshCw
 } from 'lucide-react';
 import { api } from '../lib/api';
+import type { ApiDispute, DisputesResponse } from '../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -32,8 +33,8 @@ export default function Disputes() {
   const fetchDisputes = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/disputes?limit=100');
-      const mapped: Dispute[] = (data.disputes || []).map((d: any) => ({
+      const data = await api.get<DisputesResponse>('/disputes?limit=100');
+      const mapped: Dispute[] = (data.disputes || []).map((d: ApiDispute) => ({
         id: d.id.substring(0, 8).toUpperCase(),
         type: d.type || 'General',
         booking: d.booking_id ? d.booking_id.substring(0, 8).toUpperCase() : 'N/A',
@@ -44,7 +45,6 @@ export default function Disputes() {
       setDisputes(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch disputes:', err);
       setViewState('error');
     }
   }, []);

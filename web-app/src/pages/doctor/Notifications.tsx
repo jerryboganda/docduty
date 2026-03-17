@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bell, Check, CheckCheck, Filter, RefreshCw } from 'lucide-react';
+import { Bell, CheckCheck, Filter, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
 import { formatRelative } from '../../lib/dateUtils';
 import { useToast } from '../../contexts/ToastContext';
+import type { NotificationsResponse } from '../../types/api';
 
 interface Notification {
   id: string;
@@ -34,6 +35,7 @@ const typeColors: Record<string, string> = {
 export default function DoctorNotifications() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -43,12 +45,13 @@ export default function DoctorNotifications() {
   const fetchNotifications = useCallback(async () => {
     try {
       setLoading(true);
+      setError(false);
       const unreadOnly = filter === 'unread' ? '&unreadOnly=true' : '';
-      const data = await api.get<any>(`/notifications?page=${page}&limit=30${unreadOnly}`);
+      const data = await api.get<NotificationsResponse>(`/notifications?page=${page}&limit=30${unreadOnly}`);
       setNotifications(data.notifications || []);
       setTotal(data.total || 0);
     } catch {
-      toast.error('Failed to load notifications');
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -61,7 +64,7 @@ export default function DoctorNotifications() {
       await api.put(`/notifications/${id}/read`);
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
     } catch (err) {
-      console.error('[Notification] Mark read failed:', err);
+      // Silently ignore — UI already handles state
     }
   };
 
@@ -71,7 +74,6 @@ export default function DoctorNotifications() {
       setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
       toast.success('All marked as read');
     } catch (err) {
-      console.error('[Notification] Mark all read failed:', err);
       toast.error('Failed to mark all as read');
     }
   };
@@ -84,7 +86,7 @@ export default function DoctorNotifications() {
       else if (data?.bookingId) navigate(`/doctor/bookings/${data.bookingId}`);
       else if (data?.disputeId) navigate(`/doctor/disputes/${data.disputeId}`);
     } catch (err) {
-      console.error('[Notification] Parse data failed:', err);
+      // Silently ignore — UI already handles state
     }
   };
 
@@ -114,7 +116,7 @@ export default function DoctorNotifications() {
           <button onClick={markAllRead} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
             <CheckCheck className="w-3.5 h-3.5" /> Mark All Read
           </button>
-          <button onClick={fetchNotifications} className="p-1.5 text-slate-400 hover:text-slate-600">
+          <button onClick={fetchNotifications} className="p-1.5 text-slate-400 hover:text-slate-600" aria-label="Refresh notifications">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
         </div>
@@ -123,6 +125,13 @@ export default function DoctorNotifications() {
       <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
         {loading && notifications.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-400">Loading...</div>
+        ) : error ? (
+          <div className="p-8 text-center">
+            <Bell className="w-10 h-10 text-red-300 mx-auto mb-2" />
+            <p className="text-sm font-medium text-slate-700">Failed to load notifications</p>
+            <p className="text-xs text-slate-400 mt-1">Please check your connection and try again.</p>
+            <button onClick={fetchNotifications} className="mt-3 px-4 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 transition-colors">Retry</button>
+          </div>
         ) : notifications.length === 0 ? (
           <div className="p-8 text-center">
             <Bell className="w-10 h-10 text-slate-300 mx-auto mb-2" />

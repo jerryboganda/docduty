@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, PlusCircle, CalendarDays, ClipboardCheck, 
   MapPin, CreditCard, AlertTriangle, MessageSquare, Star, Settings, X, Plus, LogOut
@@ -21,8 +21,7 @@ const navItems = [
 
 export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { user, logout } = useAuth();
-  const routerLocation = useLocation();
-  const facilityName = user?.profile?.name || 'Facility';
+  const facilityName = user?.profile && 'name' in user.profile ? user.profile.name : 'Facility';
   const initials = facilityName.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase();
   return (
     <>
@@ -47,7 +46,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
             </div>
             <span className="text-xl font-bold tracking-tight text-slate-900">DocDuty</span>
           </div>
-          <button onClick={onClose} className="lg:hidden text-slate-500 hover:text-slate-700">
+          <button onClick={onClose} className="lg:hidden text-slate-500 hover:text-slate-700" aria-label="Close sidebar">
             <X className="w-6 h-6" />
           </button>
         </div>
@@ -62,7 +61,8 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
               <NavLink
                 key={item.name}
                 to={item.path}
-                onClick={() => onClose()} // Close mobile menu on click
+                end={item.path === '/facility'}
+                onClick={() => onClose()}
                 className={({ isActive }) => `
                   flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
                   ${isActive 
@@ -71,8 +71,12 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
                   }
                 `}
               >
-                <item.icon className={`w-5 h-5 ${routerLocation.pathname === item.path ? 'text-primary' : 'text-slate-400'}`} />
-                {item.name}
+                {({ isActive }) => (
+                  <>
+                    <item.icon className={`w-5 h-5 ${isActive ? 'text-primary' : 'text-slate-400'}`} />
+                    {item.name}
+                  </>
+                )}
               </NavLink>
             ))}
           </nav>

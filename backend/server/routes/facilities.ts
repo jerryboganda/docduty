@@ -10,6 +10,7 @@ import { getDb } from '../database/schema.js';
 import { authMiddleware, type AuthRequest, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../utils/audit.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { FacilityAccountRow, FacilityLocationRow } from '../types.js';
 
 export const facilitiesRouter = Router();
 facilitiesRouter.use(authMiddleware);
@@ -71,7 +72,7 @@ facilitiesRouter.get(
         ORDER BY fa.name, fl.name
       `).all();
     } else {
-      const facility = await db.prepare<any>('SELECT id FROM facility_accounts WHERE user_id = ?').get(req.user!.userId);
+      const facility = await db.prepare<{ id: string }>('SELECT id FROM facility_accounts WHERE user_id = ?').get(req.user!.userId);
       if (!facility) {
         res.status(404).json({ error: 'Facility not found' });
         return;
@@ -140,7 +141,7 @@ facilitiesRouter.get(
   '/:id',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const facility = await db.prepare<any>(`
+    const facility = await db.prepare<FacilityAccountRow & { city_name: string | null; province_name: string | null }>(`
       SELECT fa.*, c.name AS city_name, p.name AS province_name
       FROM facility_accounts fa
       LEFT JOIN cities c ON fa.city_id = c.id
@@ -153,8 +154,8 @@ facilitiesRouter.get(
       return;
     }
 
-    facility.locations = await db.prepare('SELECT * FROM facility_locations WHERE facility_id = ? ORDER BY created_at DESC').all(facility.id);
-    res.json(facility);
+    const locations = await db.prepare('SELECT * FROM facility_locations WHERE facility_id = ? ORDER BY created_at DESC').all(facility.id);
+    res.json({ ...facility, locations });
   }),
 );
 
@@ -176,7 +177,7 @@ facilitiesRouter.post(
 
     let targetFacilityId = facilityId;
     if (req.user!.role === 'facility_admin') {
-      const facility = await db.prepare<any>('SELECT id FROM facility_accounts WHERE user_id = ?').get(req.user!.userId);
+      const facility = await db.prepare<{ id: string }>('SELECT id FROM facility_accounts WHERE user_id = ?').get(req.user!.userId);
       if (!facility) {
         res.status(404).json({ error: 'Facility not found' });
         return;
@@ -229,7 +230,7 @@ facilitiesRouter.put(
     const { name, address, latitude, longitude, geofenceRadiusM, qrRotateIntervalMin, isActive } = req.body;
 
     if (req.user!.role === 'facility_admin') {
-      const location = await db.prepare<any>(`
+      const location = await db.prepare<{ facility_id: string }>(`
         SELECT fl.facility_id
         FROM facility_locations fl
         JOIN facility_accounts fa ON fl.facility_id = fa.id
@@ -305,7 +306,7 @@ facilitiesRouter.delete(
     const locationId = req.params.id;
 
     if (req.user!.role === 'facility_admin') {
-      const location = await db.prepare<any>(`
+      const location = await db.prepare<{ id: string }>(`
         SELECT fl.id
         FROM facility_locations fl
         JOIN facility_accounts fa ON fl.facility_id = fa.id
@@ -347,7 +348,7 @@ facilitiesRouter.post(
     const locationId = req.params.id;
 
     if (req.user!.role === 'facility_admin') {
-      const location = await db.prepare<any>(`
+      const location = await db.prepare<{ facility_id: string }>(`
         SELECT fl.facility_id
         FROM facility_locations fl
         JOIN facility_accounts fa ON fl.facility_id = fa.id
@@ -384,7 +385,7 @@ facilitiesRouter.get(
   requireRole('facility_admin', 'platform_admin'),
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const location = await db.prepare<any>('SELECT * FROM facility_locations WHERE id = ?').get(req.params.id);
+    const location = await db.prepare<FacilityLocationRow>('SELECT * FROM facility_locations WHERE id = ?').get(req.params.id);
 
     if (!location) {
       res.status(404).json({ error: 'Location not found' });
@@ -392,7 +393,7 @@ facilitiesRouter.get(
     }
 
     if (req.user!.role === 'facility_admin') {
-      const facility = await db.prepare<any>('SELECT id FROM facility_accounts WHERE user_id = ?').get(req.user!.userId);
+      const facility = await db.prepare<{ id: string }>('SELECT id FROM facility_accounts WHERE user_id = ?').get(req.user!.userId);
       if (!facility || location.facility_id !== facility.id) {
         res.status(403).json({ error: 'You can only access QR codes for your own facility locations' });
         return;
@@ -402,7 +403,7 @@ facilitiesRouter.get(
     const intervalMs = (location.qr_rotate_interval_min || 5) * 60 * 1000;
     const timeSlot = Math.floor(Date.now() / intervalMs);
     const qrPayload = crypto
-      .createHmac('sha256', location.qr_secret)
+      .createHmac('sha256', location.qr_secret ?? '')
       .update(`${location.id}:${timeSlot}`)
       .digest('hex');
 

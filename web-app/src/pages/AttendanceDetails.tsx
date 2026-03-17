@@ -5,6 +5,16 @@ import {
   XCircle, AlertTriangle, Map, QrCode, Activity, AlertCircle, RefreshCw
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
+import type { ApiAttendanceEvent, ApiBooking } from '../types/api';
+
+function getEventType(event: ApiAttendanceEvent): string {
+  return event?.event_type || '';
+}
+
+function getEventTimestamp(event: ApiAttendanceEvent): string | null {
+  return event?.recorded_at || null;
+}
 
 interface AttendanceData {
   id: string;
@@ -32,16 +42,18 @@ export default function AttendanceDetails() {
     try {
       setLoading(true);
       // The id here is a booking id; fetch booking details which include attendance events
-      const data = await api.get(`/bookings/${id}`);
+      const data = await api.get<ApiBooking>(`/bookings/${id}`);
       const start = data.start_time ? new Date(data.start_time) : null;
       const end = data.end_time ? new Date(data.end_time) : null;
-      const checkIn = (data.attendanceEvents || []).find((e: any) => e.event_type === 'check_in');
-      const checkOut = (data.attendanceEvents || []).find((e: any) => e.event_type === 'check_out');
+      const checkIn = (data.attendanceEvents || []).find((e: ApiAttendanceEvent) => getEventType(e) === 'check_in');
+      const checkOut = (data.attendanceEvents || []).find((e: ApiAttendanceEvent) => getEventType(e) === 'check_out');
       const pings = (data.attendanceEvents || [])
-        .filter((e: any) => e.event_type === 'presence_ping')
-        .map((e: any) => ({
-          time: new Date(e.recorded_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-          status: e.geo_valid ? 'Verified' : 'Not Verified',
+        .filter((e: ApiAttendanceEvent) => getEventType(e) === 'presence_ping')
+        .map((e: ApiAttendanceEvent) => ({
+          time: getEventTimestamp(e)
+            ? new Date(getEventTimestamp(e) as string).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+            : '--',
+          status: (e.geo_valid || e.geo_verified) ? 'Verified' : 'Not Verified',
         }));
 
       setRecord({
@@ -53,14 +65,18 @@ export default function AttendanceDetails() {
         date: start ? start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
         scheduledStart: start ? start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'N/A',
         scheduledEnd: end ? end.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'N/A',
-        checkInTime: checkIn ? new Date(checkIn.recorded_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '--',
-        checkOutTime: checkOut ? new Date(checkOut.recorded_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '--',
-        geoStatus: checkIn?.geo_valid ? 'Verified' : 'Not Verified',
-        qrStatus: checkIn?.qr_valid ? 'Verified' : 'Not Verified',
+        checkInTime: checkIn && getEventTimestamp(checkIn)
+          ? new Date(getEventTimestamp(checkIn) as string).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+          : '--',
+        checkOutTime: checkOut && getEventTimestamp(checkOut)
+          ? new Date(getEventTimestamp(checkOut) as string).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+          : '--',
+        geoStatus: (checkIn?.geo_valid || checkIn?.geo_verified) ? 'Verified' : 'Not Verified',
+        qrStatus: (checkIn?.qr_valid || checkIn?.qr_verified) ? 'Verified' : 'Not Verified',
         pings,
       });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load details');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -193,7 +209,7 @@ export default function AttendanceDetails() {
           </h3>
           <div className="flex flex-wrap gap-3">
             {record.pings.map((ping, idx) => (
-              <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+              <div key={ping.time} className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs">
                 <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
                 <span className="text-slate-600">{ping.time}</span>
               </div>

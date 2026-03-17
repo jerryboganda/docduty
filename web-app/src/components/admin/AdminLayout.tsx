@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../lib/api';
 import UserAvatar from '../UserAvatar';
 import { subscribeToChannel, unsubscribeFromChannel } from '../../lib/realtime';
+import type { NotificationsResponse } from '../../types/api';
 
 const navItems = [
   { name: 'Ops Dashboard', icon: LayoutDashboard, path: '/admin' },
@@ -43,7 +44,7 @@ export default function AdminLayout() {
   // Poll for unread notifications + real-time subscription
   useEffect(() => {
     const fetchUnread = () => {
-      api.get<any>('/notifications?unreadOnly=true&limit=1').then(data => {
+      api.get<NotificationsResponse>('/notifications?unreadOnly=true&limit=1').then(data => {
         setUnreadCount(data?.total || 0);
       }).catch(() => {});
     };
@@ -108,18 +109,22 @@ export default function AdminLayout() {
                   }
                 `}
               >
-                <item.icon className={`w-5 h-5 ${window.location.pathname === item.path || (item.path === '/admin' && window.location.pathname === '/admin') ? 'text-white' : 'text-slate-400'}`} />
-                {item.name}
+                {({ isActive }: { isActive: boolean }) => (
+                  <>
+                    <item.icon className={`w-5 h-5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                    {item.name}
+                  </>
+                )}
               </NavLink>
             ))}
           </nav>
 
           <div className="p-4 mt-auto border-t border-slate-800">
             <div className="flex items-center gap-3">
-              <UserAvatar avatarUrl={user?.avatarUrl} name={user?.profile?.full_name || 'Admin User'} size="md" />
+              <UserAvatar avatarUrl={user?.avatarUrl} name={user?.profile ? ('full_name' in user.profile ? user.profile.full_name : user.profile.name) : 'Admin User'} size="md" />
               <div className="flex flex-col">
-                <span className="text-sm font-semibold text-white">{user?.profile?.full_name || 'Admin User'}</span>
-                <span className="text-xs text-indigo-400 font-medium">Super Admin</span>
+                <span className="text-sm font-semibold text-white">{user?.profile ? ('full_name' in user.profile ? user.profile.full_name : user.profile.name) : 'Admin User'}</span>
+                <span className="text-xs text-indigo-400 font-medium">{user?.role === 'platform_admin' ? 'Platform Admin' : user?.role?.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) || 'Admin'}</span>
               </div>
             </div>
             <button onClick={handleLogout} className="mt-3 w-full flex items-center gap-2 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-700 transition-colors">
@@ -153,8 +158,8 @@ export default function AdminLayout() {
             </button>
             <div className="h-8 w-px bg-slate-200 hidden sm:block"></div>
             <button onClick={() => navigate('/admin/settings')} className="flex items-center gap-2 text-sm font-medium text-slate-700 hover:text-slate-900 transition-colors">
-              <UserAvatar avatarUrl={user?.avatarUrl} name={user?.profile?.full_name || 'Admin User'} size="sm" />
-              <span className="hidden sm:block">{user?.profile?.full_name || 'Admin User'}</span>
+              <UserAvatar avatarUrl={user?.avatarUrl} name={user?.profile ? ('full_name' in user.profile ? user.profile.full_name : user.profile.name) : 'Admin User'} size="sm" />
+              <span className="hidden sm:block">{user?.profile ? ('full_name' in user.profile ? user.profile.full_name : user.profile.name) : 'Admin User'}</span>
             </button>
           </div>
         </header>

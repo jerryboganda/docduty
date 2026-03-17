@@ -1,14 +1,26 @@
+import 'dart:io' show Platform;
+
 /// Environment configuration for DocDuty mobile app.
 /// API base URL and feature flags are configured here.
 class Env {
   Env._();
 
-  /// Base URL for the DocDuty REST API.
-  /// For Android emulator use 10.0.2.2, for iOS simulator use localhost.
-  static const String apiBaseUrl = String.fromEnvironment(
+  /// Compile-time override for API base URL.
+  /// Pass --dart-define=API_BASE_URL=https://your-api.com/api at build time.
+  static const String _apiBaseUrlOverride = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:3001/api',
+    defaultValue: '',
   );
+
+  /// Base URL for the DocDuty REST API.
+  /// Uses compile-time override if set, otherwise detects platform:
+  /// - Android emulator: 10.0.2.2
+  /// - iOS simulator / desktop: localhost
+  static String get apiBaseUrl {
+    if (_apiBaseUrlOverride.isNotEmpty) return _apiBaseUrlOverride;
+    final host = Platform.isAndroid ? '10.0.2.2' : 'localhost';
+    return 'http://$host:3001/api';
+  }
 
   /// Soketi/Pusher realtime configuration
   static const String soketiHost = String.fromEnvironment(

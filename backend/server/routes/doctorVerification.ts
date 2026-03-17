@@ -16,6 +16,20 @@ import {
   syncLegacyUserVerificationStatus,
 } from '../utils/doctorVerification.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { DoctorProfileRow } from '../types.js';
+
+type DoctorContextUserRow = {
+  id: string;
+  phone: string;
+  email: string | null;
+  avatar_url: string | null;
+  created_at: string;
+};
+
+type DoctorContextProfileRow = DoctorProfileRow & {
+  specialty_name: string | null;
+  city_name: string | null;
+};
 
 const router = Router();
 router.use(authMiddleware);
@@ -80,10 +94,10 @@ function normalizeArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-async function syncDraftProfileFields(userId: string, draftData: Record<string, any>) {
+async function syncDraftProfileFields(userId: string, draftData: Record<string, unknown>) {
   const db = getDb();
-  const personal = draftData.personalIdentity || {};
-  const professional = draftData.professionalPractice || {};
+  const personal = (draftData.personalIdentity || {}) as Record<string, unknown>;
+  const professional = (draftData.professionalPractice || {}) as Record<string, unknown>;
 
   const userFields: string[] = [];
   const userValues: unknown[] = [];
@@ -135,10 +149,10 @@ async function syncDraftProfileFields(userId: string, draftData: Record<string, 
   })();
 }
 
-function computeMissingItems(draftData: Record<string, any>, documents: Array<Record<string, any>>, email: string | null, avatarUrl: string | null): string[] {
-  const personal = draftData.personalIdentity || {};
-  const professional = draftData.professionalPractice || {};
-  const education = draftData.education || {};
+function computeMissingItems(draftData: Record<string, unknown>, documents: Array<Record<string, unknown>>, email: string | null, avatarUrl: string | null): string[] {
+  const personal = (draftData.personalIdentity || {}) as Record<string, unknown>;
+  const professional = (draftData.professionalPractice || {}) as Record<string, unknown>;
+  const education = (draftData.education || {}) as Record<string, unknown>;
 
   const docsByType = new Set(documents.map((document) => String(document.document_type)));
   const missing: string[] = [];
@@ -159,9 +173,10 @@ function computeMissingItems(draftData: Record<string, any>, documents: Array<Re
   if (!String(education.mbbsInstitution || '').trim()) missing.push('education.mbbsInstitution');
   if (!String(education.mbbsGraduationYear || '').trim()) missing.push('education.mbbsGraduationYear');
   if (!String(education.houseJobStatus || '').trim()) missing.push('education.houseJobStatus');
-  if (!Boolean((draftData.declaration || {}).confirmsAccuracy)) missing.push('declaration.confirmsAccuracy');
-  if (!Boolean((draftData.declaration || {}).confirmsGenuineDocuments)) missing.push('declaration.confirmsGenuineDocuments');
-  if (!Boolean((draftData.declaration || {}).consentsToReview)) missing.push('declaration.consentsToReview');
+  const declaration = (draftData.declaration || {}) as Record<string, unknown>;
+  if (!Boolean(declaration.confirmsAccuracy)) missing.push('declaration.confirmsAccuracy');
+  if (!Boolean(declaration.confirmsGenuineDocuments)) missing.push('declaration.confirmsGenuineDocuments');
+  if (!Boolean(declaration.consentsToReview)) missing.push('declaration.consentsToReview');
 
   for (const type of REQUIRED_DOCUMENT_TYPES) {
     if (type === 'profile_photo' && avatarUrl) {
@@ -183,12 +198,12 @@ function computeMissingItems(draftData: Record<string, any>, documents: Array<Re
 
 async function getDoctorContext(userId: string) {
   const db = getDb();
-  const user = await db.prepare<any>(`
+  const user = await db.prepare<DoctorContextUserRow>(`
     SELECT id, phone, email, avatar_url, created_at
     FROM users
     WHERE id = ?
   `).get(userId);
-  const profile = await db.prepare<any>(`
+  const profile = await db.prepare<DoctorContextProfileRow>(`
     SELECT dp.*, sp.name AS specialty_name, c.name AS city_name
     FROM doctor_profiles dp
     LEFT JOIN specialties sp ON sp.id = dp.specialty_id
@@ -247,7 +262,7 @@ router.post('/verification-draft', asyncHandler(async (req: AuthRequest, res: Re
   await syncDraftProfileFields(req.user!.userId, sanitized);
   const context = await getDoctorContext(req.user!.userId);
   const documents = await getDoctorVerificationDocuments(verification.id);
-  const missingItems = computeMissingItems(sanitized, documents as Array<Record<string, any>>, context.user?.email || null, context.user?.avatar_url || null);
+  const missingItems = computeMissingItems(sanitized, documents as Array<Record<string, unknown>>, context.user?.email || null, context.user?.avatar_url || null);
   const nextStatus = verification.current_status === 'NOT_STARTED' ? 'IN_PROGRESS' : verification.current_status;
 
   const updated = await getDb().prepare(`
@@ -256,6 +271,11 @@ router.post('/verification-draft', asyncHandler(async (req: AuthRequest, res: Re
     WHERE id = ?
     RETURNING *
   `).get(JSON.stringify(sanitized), nextStatus, JSON.stringify(missingItems), verification.id);
+
+  if (!updated) {
+    res.status(500).json({ error: 'Failed to update verification draft' });
+    return;
+  }
 
   await syncLegacyUserVerificationStatus(req.user!.userId, updated.current_status);
   await appendVerificationAuditLog({
@@ -324,7 +344,7 @@ router.post('/verification-documents', upload.single('document'), asyncHandler(a
 
   const context = await getDoctorContext(req.user!.userId);
   const documents = await getDoctorVerificationDocuments(verification.id);
-  const missingItems = computeMissingItems(verification.draft_data_json || {}, documents as Array<Record<string, any>>, context.user?.email || null, context.user?.avatar_url || null);
+  const missingItems = computeMissingItems(verification.draft_data_json || {}, documents as Array<Record<string, unknown>>, context.user?.email || null, context.user?.avatar_url || null);
   await getDb().prepare(`
     UPDATE doctor_verifications
     SET current_status = ?, missing_items_json = ?, last_saved_at = CURRENT_TIMESTAMP
@@ -367,7 +387,7 @@ router.post('/verification-submit', asyncHandler(async (req: AuthRequest, res: R
   const draftData = sanitizeVerificationDraft((verification.draft_data_json || {}) as Record<string, unknown>);
   await syncDraftProfileFields(req.user!.userId, draftData);
   const refreshedContext = await getDoctorContext(req.user!.userId);
-  const missingItems = computeMissingItems(draftData, documents as Array<Record<string, any>>, refreshedContext.user?.email || null, refreshedContext.user?.avatar_url || null);
+  const missingItems = computeMissingItems(draftData, documents as Array<Record<string, unknown>>, refreshedContext.user?.email || null, refreshedContext.user?.avatar_url || null);
 
   if (missingItems.length > 0) {
     await getDb().prepare(`
@@ -384,12 +404,12 @@ router.post('/verification-submit', asyncHandler(async (req: AuthRequest, res: R
   }
 
   const snapshot = {
-    user: {
+    user: refreshedContext.user ? {
       id: refreshedContext.user.id,
       phone: refreshedContext.user.phone,
       email: refreshedContext.user.email,
       avatarUrl: refreshedContext.user.avatar_url,
-    },
+    } : null,
     profile: refreshedContext.profile,
     draftData,
     documents,
@@ -416,6 +436,11 @@ router.post('/verification-submit', asyncHandler(async (req: AuthRequest, res: R
     WHERE id = ?
     RETURNING *
   `).get(JSON.stringify(snapshot), verification.id);
+
+  if (!updated) {
+    res.status(500).json({ error: 'Failed to submit verification' });
+    return;
+  }
 
   await syncLegacyUserVerificationStatus(req.user!.userId, 'SUBMITTED');
   await getDb().prepare(`
@@ -458,6 +483,11 @@ router.post('/verification-withdraw', asyncHandler(async (req: AuthRequest, res:
     WHERE id = ?
     RETURNING *
   `).get(verification.id);
+
+  if (!updated) {
+    res.status(500).json({ error: 'Failed to withdraw verification' });
+    return;
+  }
 
   await syncLegacyUserVerificationStatus(req.user!.userId, updated.current_status);
   await appendVerificationAuditLog({

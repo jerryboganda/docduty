@@ -2,10 +2,20 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useToast } from '../contexts/ToastContext';
 import { 
-  ArrowLeft, AlertTriangle, FileText, UploadCloud, 
+  ArrowLeft, AlertTriangle, FileText, 
   MessageSquare, CheckCircle, Clock, MapPin, ShieldAlert, XCircle, RefreshCw
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
+import type { ApiDispute, ApiAttendanceEvent } from '../types/api';
+
+/** Extended dispute detail returned by GET /disputes/:id with joined booking fields */
+type DisputeDetail = ApiDispute & {
+  start_time?: string;
+  end_time?: string;
+  raised_against_name?: string;
+  raised_against_phone?: string;
+};
 
 interface DisputeData {
   id: string;
@@ -33,7 +43,7 @@ export default function DisputeDetails() {
   const fetchDispute = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get(`/disputes/${id}`);
+      const data = await api.get<DisputeDetail>(`/disputes/${id}`);
       const start = data.start_time ? new Date(data.start_time) : null;
       const end = data.end_time ? new Date(data.end_time) : null;
       const firstAttendanceEvent = (data.attendanceEvents || [])[0];
@@ -53,12 +63,14 @@ export default function DisputeDetails() {
         evidence: {
           geoStatus: firstAttendanceEvent?.geo_valid ? 'Verified' : 'Not Verified',
           qrStatus: firstAttendanceEvent?.qr_valid ? 'Verified' : 'Not Verified',
-          checkIn: firstAttendanceEvent?.recorded_at ? new Date(firstAttendanceEvent.recorded_at).toLocaleString() : '--',
+          checkIn: firstAttendanceEvent?.recorded_at
+            ? new Date(firstAttendanceEvent.recorded_at).toLocaleString()
+            : '--',
         },
         resolution: data.resolution_notes || null,
       });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load dispute');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -74,8 +86,8 @@ export default function DisputeDetails() {
       setResponseText('');
       toast.success('Evidence submitted');
       fetchDispute();
-    } catch (err: any) {
-      toast.error('Submission Failed', err.message || 'Failed to submit response');
+    } catch (err: unknown) {
+      toast.error('Submission Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -171,7 +183,7 @@ export default function DisputeDetails() {
               </div>
             </div>
 
-            {/* Resolution Panel (Placeholder) */}
+            {/* Resolution Panel */}
             <div className="space-y-4">
               <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
                 <ShieldAlert className="w-4 h-4 text-slate-400" /> Resolution Status
@@ -201,15 +213,6 @@ export default function DisputeDetails() {
                   onChange={(e) => setResponseText(e.target.value)}
                   className="w-full p-3 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-primary outline-none resize-none"
                 ></textarea>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">Upload Evidence (Optional)</label>
-                <div className="border-2 border-dashed border-slate-200 rounded-lg p-6 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors cursor-pointer">
-                  <UploadCloud className="w-8 h-8 text-slate-400 mb-2" />
-                  <p className="text-sm font-medium text-slate-900">Click to upload or drag and drop</p>
-                  <p className="text-xs text-slate-500 mt-1">PNG, JPG, PDF up to 10MB</p>
-                </div>
               </div>
 
               <button 

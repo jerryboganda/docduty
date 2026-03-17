@@ -6,6 +6,11 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config.js';
+import { getDb } from '../database/schema.js';
+
+interface UserStatusRow {
+  status: 'pending' | 'active' | 'suspended' | 'banned';
+}
 
 const JWT_SECRET = env.jwtSecret;
 const REFRESH_SECRET = env.jwtRefreshSecret;
@@ -31,7 +36,25 @@ export function authMiddleware(req: AuthRequest, res: Response, next: NextFuncti
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload;
     req.user = decoded;
-    next();
+
+    // H-001: Check user status in DB — suspended/banned users must not retain access
+    const db = getDb();
+    db.prepare<UserStatusRow>('SELECT status FROM users WHERE id = ?')
+      .get(decoded.userId)
+      .then((user) => {
+        if (!user) {
+          res.status(401).json({ error: 'User no longer exists' });
+          return;
+        }
+        if (user.status === 'suspended' || user.status === 'banned') {
+          res.status(403).json({ error: `Account is ${user.status}` });
+          return;
+        }
+        next();
+      })
+      .catch(() => {
+        res.status(500).json({ error: 'Failed to verify user status' });
+      });
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
   }

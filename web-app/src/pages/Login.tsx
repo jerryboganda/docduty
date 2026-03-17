@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { ShieldCheck, Plus, Lock, Key, ArrowRight, MonitorSmartphone, Stethoscope, Building2, ShieldAlert, Phone, UserPlus, User, Eye, EyeOff, Loader2 } from 'lucide-react';
-import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getHostSurface, getRolePath, getRoleSurface, getSurfaceOrigin, shouldUseDedicatedHosts } from '../lib/runtimeHost';
@@ -104,7 +104,7 @@ export default function Login() {
       setIsSubmitting(false);
     } else {
       if (!phone || !password || !fullName) { setError('All fields are required'); return; }
-      if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
+      if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
       setError(''); setIsSubmitting(true);
       try {
         const result = await register(phone, password, selectedRole, fullName);
@@ -315,10 +315,10 @@ export default function Login() {
 
           {/* Footer */}
           <div className="flex items-center justify-between mt-3 text-[11px] text-slate-400">
-            <Link to="/contact" className="hover:text-primary transition-colors">Need help?</Link>
+            <a href="mailto:support@docduty.pk" className="hover:text-primary transition-colors">Need help?</a>
             <div className="flex gap-3">
-              <Link to="/legal/privacy" className="hover:text-primary transition-colors">Privacy</Link>
-              <Link to="/legal/terms" className="hover:text-primary transition-colors">Terms</Link>
+              <a href="https://docduty.com.pk/privacy" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">Privacy</a>
+              <a href="https://docduty.com.pk/terms" target="_blank" rel="noopener noreferrer" className="hover:text-primary transition-colors">Terms</a>
             </div>
           </div>
 

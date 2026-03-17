@@ -6,6 +6,16 @@ import {
   MessageSquare, AlertTriangle, Star, XCircle, Map, RefreshCw, X
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiAttendanceEvent, ApiBooking } from '../../types/api';
+
+function getEventType(event: ApiAttendanceEvent): string {
+  return event?.event_type || '';
+}
+
+function getEventTimestamp(event: ApiAttendanceEvent): string | null {
+  return event?.recorded_at || null;
+}
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   confirmed: { label: 'Upcoming', color: 'bg-blue-100 text-blue-700 border-blue-200' },
@@ -19,7 +29,7 @@ interface BookingData {
   status: string;
   statusLabel: string;
   statusColor: string;
-  facility: { name: string; rating: string; address: string; phone: string };
+  facility: { name: string; rating: string | null; address: string; phone: string; latitude: number | null; longitude: number | null };
   shift: { id: string; role: string; date: string; time: string; location: string; pay: string };
   timeline: { step: string; time: string; status: 'completed' | 'pending' }[];
 }
@@ -39,8 +49,8 @@ export default function DoctorBookingDetails() {
     try {
       setLoading(true);
       setError('');
-      const data = await api.get(`/bookings/${id}`);
-      const b = data.booking || data;
+      const data = await api.get<{ booking: ApiBooking & { attendanceEvents?: ApiAttendanceEvent[] } }>(`/bookings/${id}`);
+      const b = data.booking;
       const start = b.start_time ? new Date(b.start_time) : null;
       const end = b.end_time ? new Date(b.end_time) : null;
       const sm = STATUS_MAP[b.status] || STATUS_MAP.confirmed;
@@ -48,12 +58,24 @@ export default function DoctorBookingDetails() {
       // Build timeline from attendance events
       const events: { step: string; time: string; status: 'completed' | 'pending' }[] = [];
       events.push({ step: 'Confirmed', time: b.created_at ? new Date(b.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '--', status: 'completed' });
-      const attEvents = b.attendanceEvents || b.attendance_events || [];
-      const checkIn = attEvents.find((e: any) => e.event_type === 'check_in');
-      const checkOut = attEvents.find((e: any) => e.event_type === 'check_out');
-      events.push({ step: 'Check-in', time: checkIn ? new Date(checkIn.created_at).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' }) : '--', status: checkIn ? 'completed' : 'pending' });
+      const attEvents = b.attendanceEvents || [];
+      const checkIn = attEvents.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_in');
+      const checkOut = attEvents.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_out');
+      events.push({
+        step: 'Check-in',
+        time: checkIn && getEventTimestamp(checkIn)
+          ? new Date(getEventTimestamp(checkIn) as string).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' })
+          : '--',
+        status: checkIn ? 'completed' : 'pending',
+      });
       events.push({ step: 'In progress', time: checkIn ? 'Active' : '--', status: checkIn && !checkOut ? 'completed' : 'pending' });
-      events.push({ step: 'Check-out', time: checkOut ? new Date(checkOut.created_at).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' }) : '--', status: checkOut ? 'completed' : 'pending' });
+      events.push({
+        step: 'Check-out',
+        time: checkOut && getEventTimestamp(checkOut)
+          ? new Date(getEventTimestamp(checkOut) as string).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' })
+          : '--',
+        status: checkOut ? 'completed' : 'pending',
+      });
       events.push({ step: 'Completed', time: b.status === 'completed' ? 'Yes' : '--', status: b.status === 'completed' ? 'completed' : 'pending' });
       events.push({ step: 'Paid', time: b.status === 'completed' ? 'Settled' : '--', status: b.status === 'completed' ? 'completed' : 'pending' });
 
@@ -64,9 +86,11 @@ export default function DoctorBookingDetails() {
         statusColor: sm.color,
         facility: {
           name: b.facility_name || 'Facility',
-          rating: b.facility_rating || '4.5',
+          rating: b.facility_rating ? String(b.facility_rating) : null,
           address: b.location_address || b.location_name || 'N/A',
           phone: 'N/A',
+          latitude: b.latitude ?? null,
+          longitude: b.longitude ?? null,
         },
         shift: {
           id: b.shift_id,
@@ -78,9 +102,8 @@ export default function DoctorBookingDetails() {
         },
         timeline: events,
       });
-    } catch (err: any) {
-      console.error('Failed to fetch booking:', err);
-      setError(err.message || 'Failed to load booking details');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -96,8 +119,8 @@ export default function DoctorBookingDetails() {
       setCancelModalOpen(false);
       toast.success('Booking cancelled');
       navigate('/doctor/bookings');
-    } catch (err: any) {
-      toast.error('Cancel Failed', err.message || 'Failed to cancel booking');
+    } catch (err: unknown) {
+      toast.error('Cancel Failed', getErrorMessage(err));
     } finally {
       setCancelling(false);
     }
@@ -144,11 +167,13 @@ export default function DoctorBookingDetails() {
           <div className="flex-1 space-y-2">
             <div>
               <h2 className="text-xl font-bold text-slate-900">{booking.facility.name}</h2>
+              {booking.facility.rating && (
               <div className="flex items-center gap-1 text-sm text-slate-500 mt-1">
                 <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
                 <span className="font-medium text-slate-900">{booking.facility.rating}</span>
                 <span>Facility Rating</span>
               </div>
+              )}
             </div>
             <p className="text-sm text-slate-600 flex items-center gap-2">
               <MapPin className="w-4 h-4 text-slate-400 shrink-0" /> {booking.facility.address}
@@ -184,7 +209,7 @@ export default function DoctorBookingDetails() {
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6">Booking Timeline</h3>
           <div className="relative border-l-2 border-slate-200 ml-3 space-y-6">
             {booking.timeline.map((item, idx) => (
-              <div key={idx} className="relative pl-6">
+              <div key={`${item.step}-${item.time}`} className="relative pl-6">
                 <div className={`absolute -left-[9px] top-0.5 w-4 h-4 rounded-full border-2 bg-white ${
                   item.status === 'completed' ? 'border-emerald-500' : 'border-slate-300'
                 }`}>
@@ -199,7 +224,14 @@ export default function DoctorBookingDetails() {
 
         <div className="pt-6 space-y-3">
           <div className="flex gap-3">
-            <button onClick={() => window.open('https://maps.google.com', '_blank')} className="flex-1 py-2.5 bg-slate-50 border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-100 transition-colors flex items-center justify-center gap-2">
+            <button onClick={() => {
+              const lat = booking.facility.latitude;
+              const lng = booking.facility.longitude;
+              const url = lat && lng
+                ? `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`
+                : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(booking.facility.address)}`;
+              window.open(url, '_blank');
+            }} className="flex-1 py-2.5 bg-slate-50 border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-100 transition-colors flex items-center justify-center gap-2">
               <Map className="w-4 h-4" /> Get Directions
             </button>
             <Link to="/doctor/messages" className="flex-1 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">

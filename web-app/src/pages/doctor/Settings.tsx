@@ -24,14 +24,13 @@ export default function DoctorSettings() {
   const fetchPreferences = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/users/preferences');
+      const data = await api.get<{ push_notifications: boolean; email_notifications: boolean; sms_notifications: boolean; show_online_status: boolean }>('/users/preferences');
       setPushNotifs(!!data.push_notifications);
       setEmailNotifs(!!data.email_notifications);
       setSmsNotifs(!!data.sms_notifications);
       setLocationConsent(!!data.show_online_status);
       setViewState('success');
     } catch (err) {
-      console.error('Failed to load preferences:', err);
       setViewState('error');
     }
   }, []);
@@ -212,7 +211,7 @@ export default function DoctorSettings() {
               </div>
               <ChevronRight className="w-5 h-5 text-slate-400" />
             </button>
-            <button onClick={() => navigate('/contact')} className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors text-left">
+            <button onClick={() => window.open('mailto:support@docduty.pk', '_blank')} className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors text-left">
               <div>
                 <p className="text-sm font-bold text-slate-900">Help & Support</p>
                 <p className="text-xs text-slate-500">Contact DocDuty operations team.</p>

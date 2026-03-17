@@ -4,36 +4,64 @@ import {
   ChevronRight, FileText, Database, Activity, RefreshCw
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useToast } from '../../contexts/ToastContext';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiAuditLog, AuditLogsResponse } from '../../types/api';
+
+interface AuditLogView extends ApiAuditLog {
+  actor: string;
+  target: string;
+  time: string;
+  type: string;
+}
+
+function formatJson(value: unknown): string {
+  if (value === null || value === undefined) return 'N/A';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
 
 export default function AuditLogs() {
-  const [selectedLog, setSelectedLog] = useState<any | null>(null);
-  const [logs, setLogs] = useState<any[]>([]);
+  const toast = useToast();
+  const [selectedLog, setSelectedLog] = useState<AuditLogView | null>(null);
+  const [logs, setLogs] = useState<AuditLogView[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [typeFilter, setTypeFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const [totalLogs, setTotalLogs] = useState(0);
+  const PAGE_SIZE = 50;
 
   const fetchLogs = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get('/admin/audit-logs?limit=100');
-      setLogs((data.logs || []).map((log: any) => ({
+      const offset = (page - 1) * PAGE_SIZE;
+      const data = await api.get<AuditLogsResponse>(`/admin/audit-logs?limit=${PAGE_SIZE}&offset=${offset}`);
+      setTotalLogs(data.total || 0);
+      setLogs((data.logs || []).map((log: ApiAuditLog) => ({
         ...log,
         actor: log.user_phone || 'System',
-        action: log.action?.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) || 'Action',
+        action: typeof log.action === 'string'
+          ? log.action.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
+          : 'Action',
         target: log.entity_id?.slice(0, 8) || 'N/A',
         time: timeAgo(log.created_at),
         type: log.entity_type === 'policy' ? 'policy_change' :
-              log.action?.includes('dispute') ? 'dispute_action' :
-              log.action?.includes('user') || log.action?.includes('verify') || log.action?.includes('suspend') ? 'user_action' :
+              (typeof log.action === 'string' && log.action.includes('dispute')) ? 'dispute_action' :
+              (typeof log.action === 'string' && (log.action.includes('user') || log.action.includes('verify') || log.action.includes('suspend'))) ? 'user_action' :
               'system_event',
       })));
-    } catch (err) {
-      console.error('Failed to fetch audit logs:', err);
+    } catch (err: unknown) {
+      toast.error('Failed to load audit logs', getErrorMessage(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page]);
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
@@ -47,7 +75,7 @@ export default function AuditLogs() {
     return `${days} day${days > 1 ? 's' : ''} ago`;
   };
 
-  const filteredLogs = logs.filter((log: any) => {
+  const filteredLogs = logs.filter((log: AuditLogView) => {
     if (!search && !typeFilter) return true;
     const s = search.toLowerCase();
     const matchesSearch = !search || log.actor?.toLowerCase().includes(s) || log.action?.toLowerCase().includes(s) || log.target?.toLowerCase().includes(s);
@@ -126,7 +154,7 @@ export default function AuditLogs() {
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className="text-sm font-bold text-slate-900">{log.action}</h3>
                     <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-slate-100 text-slate-600 border-slate-200">
-                      {log.type.replace('_', ' ')}
+                      {log.type.replace(/_/g, ' ')}
                     </span>
                   </div>
                   <p className="text-xs font-medium text-slate-500 mb-1">
@@ -139,9 +167,33 @@ export default function AuditLogs() {
             </div>
           ))}
         </div>
+        {/* Pagination */}
+        {totalLogs > PAGE_SIZE && (
+          <div className="p-4 border-t border-slate-200 flex items-center justify-between bg-slate-50/50">
+            <span className="text-xs text-slate-500">
+              Page {page} of {Math.ceil(totalLogs / PAGE_SIZE)} ({totalLogs} total)
+            </span>
+            <div className="flex gap-2">
+              <button
+                disabled={page <= 1}
+                onClick={() => setPage(p => p - 1)}
+                className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 rounded-lg disabled:opacity-40 hover:bg-slate-50"
+              >
+                Previous
+              </button>
+              <button
+                disabled={page >= Math.ceil(totalLogs / PAGE_SIZE)}
+                onClick={() => setPage(p => p + 1)}
+                className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 rounded-lg disabled:opacity-40 hover:bg-slate-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Log Detail Drawer (Mocked as a modal for simplicity) */}
+      {/* Log Detail Drawer */}
       {selectedLog && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-lg overflow-hidden animate-in slide-in-from-bottom-10 sm:zoom-in-95 duration-200">
@@ -164,7 +216,7 @@ export default function AuditLogs() {
                 </div>
                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                   <p className="text-xs font-medium text-slate-500 mb-1">Timestamp</p>
-                  <p className="text-sm font-bold text-slate-900">{selectedLog.time}</p>
+                  <p className="text-sm font-bold text-slate-900">{selectedLog.created_at ? new Date(selectedLog.created_at).toLocaleString() : selectedLog.time}</p>
                 </div>
                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 col-span-2">
                   <p className="text-xs font-medium text-slate-500 mb-1">Action</p>
@@ -172,7 +224,7 @@ export default function AuditLogs() {
                 </div>
               </div>
 
-              {selectedLog.type === 'policy_change' && (
+              {(selectedLog.old_value || selectedLog.new_value) && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                     <Activity className="w-4 h-4 text-indigo-600" /> State Changes
@@ -182,21 +234,13 @@ export default function AuditLogs() {
                     <div className="border border-red-200 bg-red-50 rounded-xl p-4">
                       <p className="text-xs font-bold text-red-800 uppercase tracking-wider mb-2">Before</p>
                       <pre className="text-[10px] font-mono text-red-900 whitespace-pre-wrap">
-{`{
-  "cancellation_fee_24h": 0,
-  "cancellation_fee_12h": 20,
-  "no_show_fee": 50
-}`}
+{formatJson(selectedLog.old_value)}
                       </pre>
                     </div>
                     <div className="border border-emerald-200 bg-emerald-50 rounded-xl p-4">
                       <p className="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2">After</p>
                       <pre className="text-[10px] font-mono text-emerald-900 whitespace-pre-wrap">
-{`{
-  "cancellation_fee_24h": 0,
-  "cancellation_fee_12h": 25,
-  "no_show_fee": 100
-}`}
+{formatJson(selectedLog.new_value)}
                       </pre>
                     </div>
                   </div>
@@ -205,7 +249,9 @@ export default function AuditLogs() {
 
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                 <p className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Audit Note</p>
-                <p className="text-sm text-slate-600 italic">"Updated penalties to align with new Q1 operational guidelines to reduce last-minute cancellations."</p>
+                <p className="text-sm text-slate-600 italic">
+                  {selectedLog.new_value?.note || selectedLog.new_value?.resolutionNotes || selectedLog.new_value?.internalNote || 'No additional note captured for this action.'}
+                </p>
               </div>
 
             </div>

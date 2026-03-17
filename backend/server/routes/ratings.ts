@@ -8,6 +8,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../database/schema.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { logger } from '../utils/logger.js';
+import type { BookingRow } from '../types.js';
 
 export const ratingsRouter = Router();
 ratingsRouter.use(authMiddleware);
@@ -27,7 +29,7 @@ ratingsRouter.post('/', asyncHandler(async (req: AuthRequest, res: Response) => 
       return;
     }
 
-    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as any;
+    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as BookingRow | undefined;
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
 
     if (!['completed', 'resolved'].includes(booking.status)) {
@@ -73,8 +75,9 @@ ratingsRouter.post('/', asyncHandler(async (req: AuthRequest, res: Response) => 
     }
 
     res.status(201).json({ ratingId, message: 'Rating submitted' });
-  } catch (err: any) {
-    console.error('[Ratings Create]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Rating submission failed', { error: message });
     res.status(500).json({ error: 'Failed to submit rating' });
   }
 }));
@@ -90,7 +93,7 @@ ratingsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
     const offset = (parsedPage - 1) * parsedLimit;
 
     let where = `WHERE r.${field} = ?`;
-    const queryParams: any[] = [req.user!.userId];
+    const queryParams: unknown[] = [req.user!.userId];
 
     const { minScore, maxScore, startDate, endDate } = req.query;
     if (minScore) { where += ' AND r.score >= ?'; queryParams.push(parseInt(minScore as string, 10)); }
@@ -115,8 +118,9 @@ ratingsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response) => {
     `).all(...queryParams, parsedLimit, offset);
 
     res.json({ ratings, total, page: parsedPage, limit: parsedLimit });
-  } catch (err: any) {
-    console.error('[Ratings List]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Ratings list failed', { error: message });
     res.status(500).json({ error: 'Failed to list ratings' });
   }
 }));

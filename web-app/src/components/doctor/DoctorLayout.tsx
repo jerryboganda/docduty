@@ -9,6 +9,7 @@ import { api } from '../../lib/api';
 import UserAvatar from '../UserAvatar';
 import { subscribeToChannel, unsubscribeFromChannel } from '../../lib/realtime';
 import { useDoctorVerification } from '../../hooks/useDoctorVerification';
+import type { NotificationsResponse } from '../../types/api';
 
 const navItems = [
   { name: 'Home (Offers)', icon: Home, path: '/doctor' },
@@ -31,7 +32,7 @@ export default function DoctorLayout() {
   const { user, logout } = useAuth();
   const { summary } = useDoctorVerification();
 
-  const doctorName = user?.profile?.fullName || user?.profile?.full_name || 'Doctor';
+  const doctorName = user?.profile && 'full_name' in user.profile ? user.profile.full_name : 'Doctor';
 
   const pageTitles: Record<string, string> = {
     '/doctor': 'Shift Offers',
@@ -53,7 +54,7 @@ export default function DoctorLayout() {
   // Poll for unread notifications + real-time subscription
   useEffect(() => {
     const fetchUnread = () => {
-      api.get<any>('/notifications?unreadOnly=true&limit=1').then(data => {
+      api.get<NotificationsResponse>('/notifications?unreadOnly=true&limit=1').then(data => {
         setUnreadCount(data?.total || 0);
       }).catch(() => {});
     };
@@ -233,8 +234,12 @@ export default function DoctorLayout() {
                   }
                 `}
               >
-                <item.icon className={`w-5 h-5 ${window.location.pathname === item.path || (item.path === '/doctor' && window.location.pathname === '/doctor') ? 'text-emerald-600' : 'text-slate-400'}`} />
-                {item.name}
+                {({ isActive }) => (
+                  <>
+                    <item.icon className={`w-5 h-5 ${isActive ? 'text-emerald-600' : 'text-slate-400'}`} />
+                    {item.name}
+                  </>
+                )}
               </NavLink>
             ))}
           </nav>

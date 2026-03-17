@@ -10,6 +10,7 @@
  */
 
 import Pusher from 'pusher';
+import { logger } from './logger.js';
 
 const SOKETI_HOST = process.env.SOKETI_HOST || '127.0.0.1';
 const SOKETI_PORT = process.env.SOKETI_PORT || '6001';
@@ -33,7 +34,7 @@ function getPusher(): Pusher | null {
     });
     return pusher;
   } catch {
-    console.error('[Pusher] Failed to initialize server-side Pusher client');
+    logger.error('Failed to initialize Pusher client');
     return null;
   }
 }
@@ -45,7 +46,7 @@ function getPusher(): Pusher | null {
 export async function triggerEvent(
   channel: string,
   event: string,
-  data: Record<string, any>
+  data: Record<string, unknown>
 ): Promise<void> {
   const client = getPusher();
   if (!client) return;

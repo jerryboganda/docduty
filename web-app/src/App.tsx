@@ -37,6 +37,7 @@ import VerificationQueue from './pages/admin/VerificationQueue';
 import DoctorAttendance from './pages/doctor/Attendance';
 import DoctorBookingDetails from './pages/doctor/BookingDetails';
 import DoctorBookings from './pages/doctor/Bookings';
+import DoctorDisputeDetails from './pages/doctor/DisputeDetails';
 import DoctorDisputes from './pages/doctor/Disputes';
 import DoctorHome from './pages/doctor/Home';
 import DoctorMessages from './pages/doctor/Messages';
@@ -175,6 +176,7 @@ function AppRoutes() {
         <Route path="profile" element={<DoctorProfile />} />
         <Route path="settings" element={<DoctorSettings />} />
         <Route path="disputes" element={<DoctorDisputes />} />
+        <Route path="disputes/:id" element={<DoctorDisputeDetails />} />
         <Route path="messages" element={<DoctorMessages />} />
         <Route path="notifications" element={<DoctorNotifications />} />
         <Route path="search" element={<Navigate to="/doctor" replace />} />

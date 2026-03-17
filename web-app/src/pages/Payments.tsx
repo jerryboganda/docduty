@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { exportToCsv } from '../lib/csv';
+import type { ApiLedgerTransaction } from '../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -44,8 +45,8 @@ export default function Payments() {
   const fetchPayments = useCallback(async () => {
     try {
       setViewState('loading');
-      const walletData = await api.get('/wallets/transactions?limit=100');
-      const txns: Transaction[] = (walletData.transactions || []).map((t: any) => ({
+      const walletData = await api.get<{ transactions: ApiLedgerTransaction[] }>('/wallets/transactions?limit=100');
+      const txns: Transaction[] = (walletData.transactions || []).map((t: ApiLedgerTransaction) => ({
         id: t.id.substring(0, 8).toUpperCase(),
         date: new Date(t.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         type: t.type === 'escrow_hold' ? 'Escrow Held' : t.type === 'escrow_release' ? 'Settlement' : t.type === 'platform_fee' ? 'Platform Fee' : t.type === 'deposit' ? 'Deposit' : t.type === 'refund' ? 'Refund' : t.type,
@@ -55,9 +56,9 @@ export default function Payments() {
       }));
 
       // Get wallet balance for summary
-      let walletBalance: any = { balancePkr: 0, heldPkr: 0 };
+      let walletBalance: { balancePkr?: number; heldPkr?: number; held_pkr?: number } = { balancePkr: 0, heldPkr: 0 };
       try {
-        walletBalance = await api.get('/wallets/balance');
+        walletBalance = await api.get<{ balancePkr?: number; heldPkr?: number; held_pkr?: number }>('/wallets/balance');
       } catch { /* wallet may not exist yet */ }
       
       setSummary({
@@ -70,7 +71,6 @@ export default function Payments() {
       setTransactions(txns);
       setViewState(txns.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch payments:', err);
       setViewState('error');
     }
   }, []);
@@ -155,9 +155,7 @@ export default function Payments() {
             <span className="text-sm font-medium">Settled This Week</span>
           </div>
           <p className="text-xl font-bold text-slate-900">Rs. {summary.settledThisWeek.toLocaleString()}</p>
-          <p className="text-xs text-emerald-600 mt-1 flex items-center gap-1 font-medium">
-            <ArrowUpRight className="w-3 h-3" /> +12% vs last week
-          </p>
+          <p className="text-xs text-slate-500 mt-1">Completed settlements</p>
         </div>
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <div className="flex items-center gap-3 mb-2 text-slate-500">
@@ -329,7 +327,7 @@ export default function Payments() {
                   {selectedTxn.type === 'Refund' && (
                     <div className="flex justify-between text-slate-600">
                       <span>Cancellation Penalty</span>
-                      <span className="text-red-600">-Rs. 1,000</span>
+                      <span className="text-red-600">Applied per policy</span>
                     </div>
                   )}
                   <div className="flex justify-between font-bold text-slate-900 pt-2 border-t border-slate-200 mt-2">

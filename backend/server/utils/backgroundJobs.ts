@@ -6,6 +6,20 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../database/schema.js';
 import { logAudit } from './audit.js';
+import { logger } from './logger.js';
+import type { BookingRow, WalletRow } from '../types.js';
+
+/** Booking joined with shift columns used by no-show detection. */
+interface BookingWithShift extends BookingRow {
+  start_time: string;
+  end_time: string;
+  shift_title: string;
+}
+
+/** Minimal row returned by the idempotency check. */
+interface SettledAtRow {
+  settled_at: string | null;
+}
 
 async function detectNoShows(): Promise<void> {
   try {
@@ -30,7 +44,7 @@ async function detectNoShows(): Promise<void> {
       WHERE b.status = 'confirmed'
         AND s.start_time + (? * INTERVAL '1 minute') < CURRENT_TIMESTAMP
         AND b.no_show_detected_at IS NULL
-    `).all(noShowThresholdMin) as any[];
+    `).all(noShowThresholdMin) as BookingWithShift[];
 
     await db.transaction(async () => {
       for (const booking of overdueBookings) {
@@ -55,7 +69,7 @@ async function detectNoShows(): Promise<void> {
           WHERE user_id = ?
         `).run(penalty, booking.doctor_id);
 
-        const doctorWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.doctor_id) as any;
+        const doctorWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.doctor_id) as WalletRow | undefined;
         if (doctorWallet && noshowFeePkr > 0) {
           await db.prepare("UPDATE wallets SET balance_pkr = GREATEST(0, balance_pkr - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .run(noshowFeePkr, doctorWallet.id);
@@ -64,7 +78,7 @@ async function detectNoShows(): Promise<void> {
             .run(uuidv4(), doctorWallet.id, booking.id, noshowFeePkr);
         }
 
-        const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id) as any;
+        const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id) as WalletRow | undefined;
         if (posterWallet) {
           await db.prepare("UPDATE wallets SET balance_pkr = balance_pkr + ?, held_pkr = GREATEST(0, held_pkr - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .run(booking.total_price_pkr, booking.total_price_pkr, posterWallet.id);
@@ -77,26 +91,27 @@ async function detectNoShows(): Promise<void> {
         await db.prepare(`
           INSERT INTO notifications (id, user_id, type, title, body, data)
           VALUES (?, ?, 'no_show', 'No-Show Detected', 'The doctor did not check in. Your booking has been refunded.', ?)
-        `).run(uuidv4(), booking.poster_id, { bookingId: booking.id });
+        `).run(uuidv4(), booking.poster_id, JSON.stringify({ bookingId: booking.id }));
 
         await db.prepare(`
           INSERT INTO notifications (id, user_id, type, title, body, data)
           VALUES (?, ?, 'no_show_warning', 'No-Show Warning', 'You were marked as no-show for a shift. This affects your reliability score.', ?)
-        `).run(uuidv4(), booking.doctor_id, { bookingId: booking.id });
+        `).run(uuidv4(), booking.doctor_id, JSON.stringify({ bookingId: booking.id }));
 
         await logAudit({
           userId: 'system',
           action: 'no_show_detected',
           entityType: 'booking',
           entityId: booking.id,
-          newValue: { doctorId: booking.doctor_id, shiftTitle: booking.shift_title },
+          newValue: JSON.stringify({ doctorId: booking.doctor_id, shiftTitle: booking.shift_title }),
         });
 
-        console.log(`[NoShow] Booking ${booking.id}: doctor ${booking.doctor_id} marked as no-show`);
+        logger.info('No-show detected', { bookingId: booking.id, doctorId: booking.doctor_id });
       }
     })();
-  } catch (err: any) {
-    console.error('[NoShow Detection Error]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('No-show detection failed', { error: message });
   }
 }
 
@@ -116,10 +131,11 @@ async function expireOldShifts(): Promise<void> {
         )
       `).run();
 
-      console.log(`[Expiry] ${expired.changes} shift(s) expired`);
+      logger.info('Shifts expired', { count: expired.changes });
     }
-  } catch (err: any) {
-    console.error('[Shift Expiry Error]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Shift expiry failed', { error: message });
   }
 }
 
@@ -132,7 +148,7 @@ async function autoCompleteOverdueShifts(): Promise<void> {
       JOIN shifts s ON b.shift_id = s.id
       WHERE b.status = 'in_progress'
         AND s.end_time + INTERVAL '60 minutes' < CURRENT_TIMESTAMP
-    `).all() as any[];
+    `).all() as BookingWithShift[];
 
     for (const booking of overdueBookings) {
       const eventId = uuidv4();
@@ -147,21 +163,22 @@ async function autoCompleteOverdueShifts(): Promise<void> {
         .run(booking.shift_id);
 
       await processAutoSettlement(booking);
-      console.log(`[AutoComplete] Booking ${booking.id} auto-completed`);
+      logger.info('Booking auto-completed', { bookingId: booking.id });
     }
-  } catch (err: any) {
-    console.error('[AutoComplete Error]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Auto-complete failed', { error: message });
   }
 }
 
-async function processAutoSettlement(booking: any): Promise<void> {
+async function processAutoSettlement(booking: BookingRow): Promise<void> {
   try {
     const db = getDb();
     await db.transaction(async () => {
       // C2b fix: Atomic idempotency check to prevent double settlement
       const locked = await db.prepare(
         'SELECT settled_at FROM bookings WHERE id = ? FOR UPDATE'
-      ).get(booking.id) as any;
+      ).get(booking.id) as SettledAtRow | undefined;
 
       if (locked?.settled_at) {
         return; // Already settled
@@ -171,7 +188,7 @@ async function processAutoSettlement(booking: any): Promise<void> {
         "UPDATE bookings SET settled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
       ).run(booking.id);
 
-      const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id) as any;
+      const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id) as WalletRow | undefined;
       if (posterWallet) {
         await db.prepare("UPDATE wallets SET held_pkr = GREATEST(0, held_pkr - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
           .run(booking.total_price_pkr, posterWallet.id);
@@ -183,7 +200,7 @@ async function processAutoSettlement(booking: any): Promise<void> {
           .run(uuidv4(), posterWallet.id, booking.id, booking.platform_fee_pkr);
       }
 
-      const doctorWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.doctor_id) as any;
+      const doctorWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(booking.doctor_id) as WalletRow | undefined;
       if (doctorWallet) {
         await db.prepare("UPDATE wallets SET balance_pkr = balance_pkr + ?, total_earned_pkr = total_earned_pkr + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
           .run(booking.payout_pkr, booking.payout_pkr, doctorWallet.id);
@@ -192,13 +209,14 @@ async function processAutoSettlement(booking: any): Promise<void> {
           .run(uuidv4(), doctorWallet.id, booking.id, booking.payout_pkr);
       }
     })();
-  } catch (err: any) {
-    console.error('[Auto Settlement Error]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Auto settlement failed', { error: message });
   }
 }
 
 export function startBackgroundJobs(): void {
-  console.log('[Jobs] Starting background jobs...');
+  logger.info('Starting background jobs');
 
   setInterval(() => { void detectNoShows(); }, 2 * 60 * 1000);
   setInterval(() => { void expireOldShifts(); }, 5 * 60 * 1000);
@@ -210,5 +228,5 @@ export function startBackgroundJobs(): void {
     void autoCompleteOverdueShifts();
   }, 5000);
 
-  console.log('[Jobs] Background jobs scheduled');
+  logger.info('Background jobs scheduled');
 }

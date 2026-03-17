@@ -9,6 +9,7 @@ import { getDb } from '../database/schema.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { notifyUser } from '../utils/pusher.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { logger } from '../utils/logger.js';
 
 export const notificationsRouter = Router();
 notificationsRouter.use(authMiddleware);
@@ -19,7 +20,7 @@ notificationsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response
     const { unreadOnly, page = '1', limit = '20' } = req.query;
 
     let where = 'WHERE user_id = ?';
-    const params: any[] = [req.user!.userId];
+    const params: unknown[] = [req.user!.userId];
 
     if (unreadOnly === 'true') {
       where += ' AND is_read = FALSE';
@@ -38,8 +39,9 @@ notificationsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response
     `).all(...params, parsedLimit, offset);
 
     res.json({ notifications, total, unreadCount, page: parsedPage, limit: parsedLimit });
-  } catch (err: any) {
-    console.error('[Notifications List]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Notifications list failed', { error: message });
     res.status(500).json({ error: 'Failed to list notifications' });
   }
 }));
@@ -50,8 +52,9 @@ notificationsRouter.put('/:id/read', asyncHandler(async (req: AuthRequest, res: 
     await db.prepare('UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?')
       .run(req.params.id, req.user!.userId);
     res.json({ message: 'Marked as read' });
-  } catch (err: any) {
-    console.error('[Notifications Read]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Notification mark-read failed', { error: message });
     res.status(500).json({ error: 'Failed to mark as read' });
   }
 }));
@@ -62,8 +65,9 @@ notificationsRouter.put('/read-all', asyncHandler(async (req: AuthRequest, res: 
     await db.prepare('UPDATE notifications SET is_read = TRUE WHERE user_id = ? AND is_read = FALSE')
       .run(req.user!.userId);
     res.json({ message: 'All notifications marked as read' });
-  } catch (err: any) {
-    console.error('[Notifications Read All]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Notifications mark-all-read failed', { error: message });
     res.status(500).json({ error: 'Failed to mark all as read' });
   }
 }));
@@ -99,8 +103,9 @@ notificationsRouter.post('/push', asyncHandler(async (req: AuthRequest, res: Res
     });
 
     res.status(201).json({ id: notifId, message: 'Notification created and pushed' });
-  } catch (err: any) {
-    console.error('[Notifications Push]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Notification push failed', { error: message });
     res.status(500).json({ error: 'Failed to push notification' });
   }
 }));

@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { 
-  Search, Filter, Calendar, Clock, MapPin, 
-  UserCircle, CheckCircle, AlertCircle, RefreshCw, XCircle, ChevronRight,
+  Search, Filter, Clock, MapPin, 
+  UserCircle, CheckCircle, RefreshCw, XCircle, ChevronRight,
   Map, QrCode
 } from 'lucide-react';
 import { api } from '../lib/api';
+import type { ApiBooking, BookingsResponse } from '../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -33,12 +34,16 @@ export default function Attendance() {
     try {
       setViewState('loading');
       // Get bookings that are confirmed or in progress (today's attendance)
-      const data = await api.get('/bookings?limit=100');
+      const data = await api.get<BookingsResponse>('/bookings?limit=100');
       const mapped: AttendanceRecord[] = (data.bookings || [])
-        .filter((b: any) => ['confirmed', 'in_progress'].includes(b.status))
-        .map((b: any) => {
+        .filter((b: ApiBooking) => ['confirmed', 'in_progress'].includes(b.status))
+        .map((b: ApiBooking) => {
           const start = b.start_time ? new Date(b.start_time) : null;
           const hasCheckIn = b.status === 'in_progress';
+          // NOTE: Geo/QR verification status is derived from booking status (in_progress implies check-in occurred).
+          // The /bookings list endpoint does not return individual attendance_events with geo_valid/qr_valid fields.
+          // For precise verification data, the booking detail page fetches attendance events directly.
+          const checkedInVerified = Boolean(b.checkin_verified);
           return {
             id: b.id,
             doctor: b.doctor_name || 'Unknown Doctor',
@@ -46,15 +51,14 @@ export default function Attendance() {
             location: b.location_name || 'N/A',
             startTime: start ? start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'N/A',
             status: hasCheckIn ? 'Checked In' : 'Pending',
-            geo: hasCheckIn ? 'Verified' : 'Not Scanned',
-            qr: hasCheckIn ? 'Verified' : 'Not Scanned',
+            geo: checkedInVerified ? 'Verified' : hasCheckIn ? 'Pending Verification' : 'Not Scanned',
+            qr: checkedInVerified ? 'Verified' : hasCheckIn ? 'Pending Verification' : 'Not Scanned',
             bookingId: b.id,
           };
         });
       setRecords(mapped);
       setViewState(mapped.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch attendance:', err);
       setViewState('error');
     }
   }, []);

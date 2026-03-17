@@ -5,7 +5,8 @@ import {
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useToast } from '../../contexts/ToastContext';
-import { SUPPORT_EMAIL, SUPPORT_PHONE } from '../../lib/support';
+import { SUPPORT_EMAIL, SUPPORT_PHONE, getErrorMessage } from '../../lib/support';
+import type { IntegrationsResponse } from '../../types/api';
 
 export default function AdminSettings() {
   const toast = useToast();
@@ -32,9 +33,57 @@ export default function AdminSettings() {
     { key: 'suspicious', title: 'Suspicious Activity', desc: 'Alert on multiple failed logins or geofence anomalies.', enabled: true },
   ]);
 
-  // API key reveal state
+  // API integration state — fetched from server (never hardcoded)
+  const [integrations, setIntegrations] = useState<{
+    stripe: { connected: boolean; maskedKey: string };
+    twilio: { connected: boolean; maskedKey: string };
+  } | null>(null);
+  const [integrationsLoading, setIntegrationsLoading] = useState(false);
   const [revealStripe, setRevealStripe] = useState(false);
   const [revealTwilio, setRevealTwilio] = useState(false);
+
+  // Fetch policies from server on mount and populate form fields
+  useEffect(() => {
+    api.get<{ policies: Array<{ key: string; value: string }> }>('/admin/policies')
+      .then(({ policies }) => {
+        const map = new Map(policies.map(p => [p.key, p.value]));
+        if (map.has('platform_name')) setPlatformName(map.get('platform_name')!);
+        if (map.has('support_email')) setSupportEmail(map.get('support_email')!);
+        if (map.has('support_phone')) setSupportPhone(map.get('support_phone')!);
+        if (map.has('maintenance_mode')) setMaintenanceMode(map.get('maintenance_mode') === '1');
+        if (map.has('require_2fa')) setRequire2FA(map.get('require_2fa') === '1');
+        if (map.has('session_timeout')) setSessionTimeout(map.get('session_timeout')!);
+        setAlerts(prev => prev.map(a => {
+          const val = map.get(`alert_${a.key}`);
+          return val !== undefined ? { ...a, enabled: val === '1' } : a;
+        }));
+      })
+      .catch(() => {
+        // Keep defaults on failure — admin will see default values
+      });
+  }, []);
+
+  // Load integrations from server
+  useEffect(() => {
+    if (activeTab === 'api' && !integrations) {
+      setIntegrationsLoading(true);
+      api.get('/admin/integrations')
+        .then((data: IntegrationsResponse) => {
+          setIntegrations({
+            stripe: { connected: data.stripe?.connected ?? false, maskedKey: data.stripe?.masked_key ?? '••••••••' },
+            twilio: { connected: data.twilio?.connected ?? false, maskedKey: data.twilio?.masked_sid ?? '••••••••' },
+          });
+        })
+        .catch(() => {
+          // Fallback: show not-configured state
+          setIntegrations({
+            stripe: { connected: false, maskedKey: 'Not configured' },
+            twilio: { connected: false, maskedKey: 'Not configured' },
+          });
+        })
+        .finally(() => setIntegrationsLoading(false));
+    }
+  }, [activeTab, integrations]);
 
   const toggleAlert = (key: string) => {
     setAlerts(prev => prev.map(a => a.key === key ? { ...a, enabled: !a.enabled } : a));
@@ -65,7 +114,8 @@ export default function AdminSettings() {
           await api.put(`/admin/policies/${setting.key}`, { value: setting.value, auditNote });
           savedCount++;
         } catch {
-          // Policy key may not exist yet — skip gracefully
+          // Policy key may not exist yet — count as skipped
+          toast.error(`Failed to save setting: ${setting.key}`);
         }
       }
 
@@ -73,7 +123,6 @@ export default function AdminSettings() {
       setSaveModalOpen(false);
       setAuditNote('');
     } catch (err) {
-      console.error('Failed to save:', err);
       toast.error('Failed to save settings');
     } finally {
       setSaving(false);
@@ -257,6 +306,12 @@ export default function AdminSettings() {
                   <Key className="w-5 h-5 text-indigo-600" /> API Keys & Webhooks
                 </h3>
                 
+                {integrationsLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="w-6 h-6 animate-spin text-indigo-600" />
+                    <span className="ml-2 text-sm text-slate-500">Loading integrations...</span>
+                  </div>
+                ) : (
                 <div className="space-y-4">
                   <div className="p-4 border border-slate-200 rounded-xl bg-white">
                     <div className="flex justify-between items-start mb-4">
@@ -264,14 +319,18 @@ export default function AdminSettings() {
                         <p className="text-sm font-bold text-slate-900">Payment Gateway (Stripe)</p>
                         <p className="text-xs text-slate-500">Used for escrow and settlements.</p>
                       </div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
-                        Connected
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                        integrations?.stripe.connected
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-slate-50 text-slate-500 border-slate-200'
+                      }`}>
+                        {integrations?.stripe.connected ? 'Connected' : 'Not Connected'}
                       </span>
                     </div>
                     <div className="relative">
                       <input 
                         type={revealStripe ? 'text' : 'password'}
-                        defaultValue="sk_test_1234567890abcdef" 
+                        value={integrations?.stripe.maskedKey ?? '••••••••'}
                         className="w-full p-3 pr-20 text-sm font-mono border border-slate-200 rounded-lg bg-slate-50 text-slate-900 outline-none" 
                         readOnly
                       />
@@ -279,6 +338,7 @@ export default function AdminSettings() {
                         {revealStripe ? 'Hide' : 'Reveal'}
                       </button>
                     </div>
+                    <p className="mt-2 text-xs text-slate-400">Keys are managed server-side. Only masked values are shown here.</p>
                   </div>
 
                   <div className="p-4 border border-slate-200 rounded-xl bg-white">
@@ -287,14 +347,18 @@ export default function AdminSettings() {
                         <p className="text-sm font-bold text-slate-900">SMS Provider (Twilio)</p>
                         <p className="text-xs text-slate-500">Used for OTPs and notifications.</p>
                       </div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
-                        Connected
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                        integrations?.twilio.connected
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-slate-50 text-slate-500 border-slate-200'
+                      }`}>
+                        {integrations?.twilio.connected ? 'Connected' : 'Not Connected'}
                       </span>
                     </div>
                     <div className="relative">
                       <input 
                         type={revealTwilio ? 'text' : 'password'}
-                        defaultValue="AC1234567890abcdef" 
+                        value={integrations?.twilio.maskedKey ?? '••••••••'}
                         className="w-full p-3 pr-20 text-sm font-mono border border-slate-200 rounded-lg bg-slate-50 text-slate-900 outline-none" 
                         readOnly
                       />
@@ -302,8 +366,10 @@ export default function AdminSettings() {
                         {revealTwilio ? 'Hide' : 'Reveal'}
                       </button>
                     </div>
+                    <p className="mt-2 text-xs text-slate-400">Keys are managed server-side. Only masked values are shown here.</p>
                   </div>
                 </div>
+                )}
               </div>
             </div>
           )}

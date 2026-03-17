@@ -3,7 +3,7 @@
  * Handles file upload with validation (type, size, magic bytes)
  */
 
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -106,7 +106,7 @@ uploadsRouter.post(
     const safeFilename = `${req.user!.userId}_${crypto.randomBytes(8).toString('hex')}${extension}`;
     const filePath = path.join(AVATARS_DIR, safeFilename);
     const db = getDb();
-    const currentUser = await db.prepare<any>('SELECT avatar_url FROM users WHERE id = ?').get(req.user!.userId);
+    const currentUser = await db.prepare<{ avatar_url: string | null }>('SELECT avatar_url FROM users WHERE id = ?').get(req.user!.userId);
 
     if (currentUser?.avatar_url) {
       const oldFilename = getStoredFilename(currentUser.avatar_url);
@@ -144,7 +144,7 @@ uploadsRouter.delete(
   '/avatar',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const currentUser = await db.prepare<any>('SELECT avatar_url FROM users WHERE id = ?').get(req.user!.userId);
+    const currentUser = await db.prepare<{ avatar_url: string | null }>('SELECT avatar_url FROM users WHERE id = ?').get(req.user!.userId);
 
     if (currentUser?.avatar_url) {
       const filename = getStoredFilename(currentUser.avatar_url);
@@ -168,7 +168,7 @@ uploadsRouter.delete(
   }),
 );
 
-export function handleMulterError(err: any, _req: any, res: any, next: any): void {
+export function handleMulterError(err: unknown, _req: Request, res: Response, next: NextFunction): void {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       res.status(400).json({ error: `File too large. Maximum size: ${MAX_FILE_SIZE / 1024 / 1024}MB` });
@@ -182,7 +182,7 @@ export function handleMulterError(err: any, _req: any, res: any, next: any): voi
     return;
   }
 
-  if (err?.message?.includes('Invalid file')) {
+  if (err instanceof Error && err.message?.includes('Invalid file')) {
     res.status(400).json({ error: err.message });
     return;
   }

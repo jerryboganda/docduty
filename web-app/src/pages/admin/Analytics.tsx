@@ -5,6 +5,9 @@ import {
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { exportToCsv } from '../../lib/csv';
+import { useToast } from '../../contexts/ToastContext';
+import { getErrorMessage } from '../../lib/support';
+import type { AnalyticsResponse, TimeSeriesPoint, TopDoctor } from '../../types/api';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend
@@ -14,7 +17,7 @@ const PERIOD_MAP: Record<string, { days: number }> = {
   'Last 7 Days': { days: 7 },
   'Last 30 Days': { days: 30 },
   'Last 90 Days': { days: 90 },
-  'Year to Date': { days: 365 },
+  'Year to Date': { days: Math.ceil((Date.now() - new Date(new Date().getFullYear(), 0, 1).getTime()) / 86400000) || 1 },
 };
 
 function toISODate(d: Date) {
@@ -22,8 +25,9 @@ function toISODate(d: Date) {
 }
 
 export default function AnalyticsExports() {
+  const toast = useToast();
   const [dateRange, setDateRange] = useState('Last 30 Days');
-  const [analytics, setAnalytics] = useState<any>(null);
+  const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchAnalytics = useCallback(async () => {
@@ -34,8 +38,8 @@ export default function AnalyticsExports() {
       const startDate = toISODate(new Date(Date.now() - days * 86400000));
       const data = await api.get(`/admin/analytics?startDate=${startDate}&endDate=${endDate}&period=${days}d`);
       setAnalytics(data);
-    } catch (err) {
-      console.error('Failed to fetch analytics:', err);
+    } catch (err: unknown) {
+      toast.error('Failed to load analytics', getErrorMessage(err));
       setAnalytics(null);
     } finally {
       setLoading(false);
@@ -50,15 +54,18 @@ export default function AnalyticsExports() {
   const disputeRate = totalBookings > 0 ? ((analytics?.disputes?.total || 0) / totalBookings * 100).toFixed(1) : '0.0';
 
   const trends = analytics?.trends || {};
-  const timeSeries: any[] = analytics?.timeSeries || [];
+  const timeSeries: TimeSeriesPoint[] = analytics?.timeSeries || [];
 
   const renderTrendBadge = (value: number | undefined, invertColor = false) => {
     const v = value ?? 0;
     const isUp = v >= 0;
-    const color = invertColor ? (isUp ? 'red' : 'emerald') : (isUp ? 'emerald' : 'red');
+    const useGreen = invertColor ? !isUp : isUp;
     const Icon = isUp ? TrendingUp : TrendingDown;
+    const colorClasses = useGreen
+      ? 'text-emerald-600 bg-emerald-50'
+      : 'text-red-600 bg-red-50';
     return (
-      <span className={`text-xs font-bold text-${color}-600 bg-${color}-50 px-2 py-1 rounded-lg flex items-center gap-1`}>
+      <span className={`text-xs font-bold ${colorClasses} px-2 py-1 rounded-lg flex items-center gap-1`}>
         <Icon className="w-3 h-3" /> {isUp ? '+' : ''}{v.toFixed(0)}%
       </span>
     );
@@ -66,7 +73,7 @@ export default function AnalyticsExports() {
 
   const handleExportFinancials = () => {
     if (!analytics) return;
-    const rows = timeSeries.map((d: any) => ({
+    const rows = timeSeries.map((d: TimeSeriesPoint) => ({
       date: d.date,
       bookings: d.bookings,
       revenue: d.revenue,
@@ -254,8 +261,8 @@ export default function AnalyticsExports() {
             <h3 className="text-base font-bold text-slate-900 mb-4">Top Doctors by Rating</h3>
             {analytics?.topDoctors?.length > 0 ? (
               <div className="space-y-3">
-                {analytics.topDoctors.slice(0, 5).map((doc: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
+                {analytics.topDoctors.slice(0, 5).map((doc: TopDoctor, i: number) => (
+                  <div key={doc.name} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
                     <div className="flex items-center gap-3">
                       <span className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 text-xs font-bold flex items-center justify-center">{i + 1}</span>
                       <span className="text-sm font-medium text-slate-900">{doc.name}</span>

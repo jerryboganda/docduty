@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   MapPin, Clock, QrCode, CheckCircle, 
-  AlertTriangle, Activity, Map, XCircle, RefreshCw
+  AlertTriangle, Activity, Map, XCircle, RefreshCw, Loader2
 } from 'lucide-react';
 import { useToast } from '../../contexts/ToastContext';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
+import type { ApiAttendanceEvent, ApiBooking, BookingsResponse } from '../../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 type AttendanceState = 'Check-in' | 'In Progress' | 'Check-out';
@@ -19,6 +21,33 @@ interface ActiveShift {
   endTime: string;
   date: string;
   checkInTime: string | null;
+  checkInRaw: Date | null;
+}
+
+interface GpsPosition {
+  latitude: number;
+  longitude: number;
+}
+
+function getEventType(event: ApiAttendanceEvent): string {
+  return event?.event_type || '';
+}
+
+function getEventTimestamp(event: ApiAttendanceEvent): string | null {
+  return event?.recorded_at || null;
+}
+
+function formatElapsed(checkInDate: Date): string {
+  const elapsed = Math.max(0, Date.now() - checkInDate.getTime());
+  const hours = Math.floor(elapsed / 3_600_000);
+  const mins = Math.floor((elapsed % 3_600_000) / 60_000);
+  return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+}
+
+function calcElapsedFraction(checkInDate: Date, shiftDurationHours: number): number {
+  const elapsed = Math.max(0, Date.now() - checkInDate.getTime());
+  const totalMs = shiftDurationHours * 3_600_000;
+  return Math.min(1, elapsed / totalMs);
 }
 
 export default function DoctorAttendance() {
@@ -27,14 +56,55 @@ export default function DoctorAttendance() {
   const [attendanceState, setAttendanceState] = useState<AttendanceState>('Check-in');
   const [shift, setShift] = useState<ActiveShift | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [gps, setGps] = useState<GpsPosition | null>(null);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsLoading, setGpsLoading] = useState(false);
+  const [elapsedStr, setElapsedStr] = useState('00:00');
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Request real GPS position
+  const requestGps = useCallback((): Promise<GpsPosition> => {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation is not supported by your browser'));
+        return;
+      }
+      setGpsLoading(true);
+      setGpsError(null);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const position = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+          setGps(position);
+          setGpsLoading(false);
+          resolve(position);
+        },
+        (err) => {
+          setGpsError(err.message);
+          setGpsLoading(false);
+          reject(err);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+      );
+    });
+  }, []);
+
+  // Start elapsed timer when checked in
+  useEffect(() => {
+    if (attendanceState === 'In Progress' && shift?.checkInRaw) {
+      const tick = () => setElapsedStr(formatElapsed(shift.checkInRaw!));
+      tick();
+      timerRef.current = setInterval(tick, 30_000); // update every 30s
+      return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    }
+  }, [attendanceState, shift?.checkInRaw]);
 
   const fetchActiveShift = useCallback(async () => {
     try {
       setViewState('loading');
-      const data = await api.get('/bookings?status=confirmed,in_progress&limit=10');
+      const data = await api.get<BookingsResponse>('/bookings?status=confirmed,in_progress&limit=10');
       const bookings = data.bookings || [];
       // find the booking that's today or currently active
-      const activeBooking = bookings.find((b: any) => b.status === 'in_progress') || bookings[0];
+      const activeBooking = bookings.find((b: ApiBooking) => b.status === 'in_progress') || bookings[0];
       if (!activeBooking) {
         setShift(null);
         setViewState('empty');
@@ -44,15 +114,14 @@ export default function DoctorAttendance() {
       const end = activeBooking.end_time ? new Date(activeBooking.end_time) : null;
 
       // Check attendance events
-      let bookingDetail: any = null;
+      let bookingDetail: ApiBooking | null = null;
       try {
-        bookingDetail = await api.get(`/bookings/${activeBooking.id}`);
+        bookingDetail = await api.get<ApiBooking>(`/bookings/${activeBooking.id}`);
       } catch (err) {
-        console.error('[Attendance] Failed to fetch booking detail:', err);
       }
-      const attEvents = bookingDetail?.attendanceEvents || bookingDetail?.attendance_events || bookingDetail?.booking?.attendance_events || [];
-      const checkInEvent = attEvents.find((e: any) => e.event_type === 'check_in');
-      const checkOutEvent = attEvents.find((e: any) => e.event_type === 'check_out');
+      const attEvents = bookingDetail?.attendanceEvents || [];
+      const checkInEvent = attEvents.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_in');
+      const checkOutEvent = attEvents.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_out');
 
       setShift({
         id: activeBooking.shift_id || activeBooking.id,
@@ -63,7 +132,10 @@ export default function DoctorAttendance() {
         startTime: start ? start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '--',
         endTime: end ? end.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '--',
         date: start ? `Today, ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'Today',
-        checkInTime: checkInEvent ? new Date(checkInEvent.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : null,
+        checkInTime: checkInEvent && getEventTimestamp(checkInEvent)
+          ? new Date(getEventTimestamp(checkInEvent) as string).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+          : null,
+        checkInRaw: checkInEvent && getEventTimestamp(checkInEvent) ? new Date(getEventTimestamp(checkInEvent) as string) : null,
       });
 
       if (checkOutEvent) {
@@ -75,7 +147,6 @@ export default function DoctorAttendance() {
       }
       setViewState('success');
     } catch (err) {
-      console.error('Failed to fetch active shift:', err);
       setViewState('error');
     }
   }, []);
@@ -86,17 +157,39 @@ export default function DoctorAttendance() {
     if (!shift) return;
     try {
       setSubmitting(true);
+      // Get real GPS position
+      let position: GpsPosition;
+      try {
+        position = await requestGps();
+      } catch {
+        toast.error('GPS Required', 'Please enable location services to check in.');
+        setSubmitting(false);
+        return;
+      }
+      // TODO: Integrate QR scanner — for now prompt user
+      // In production, this would open a camera-based QR scanner
+      const qrCode = prompt('Scan or enter the facility QR code:');
+      if (!qrCode || !qrCode.trim()) {
+        toast.error('QR code is required for check-in');
+        setSubmitting(false);
+        return;
+      }
       await api.post('/attendance/check-in', {
         bookingId: shift.bookingId,
-        qrCode: 'demo-qr-token',
-        latitude: 24.8607,
-        longitude: 67.0011,
+        qrCode: qrCode.trim(),
+        latitude: position.latitude,
+        longitude: position.longitude,
       });
+      const now = new Date();
       setAttendanceState('In Progress');
-      setShift(prev => prev ? { ...prev, checkInTime: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) } : prev);
+      setShift(prev => prev ? {
+        ...prev,
+        checkInTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        checkInRaw: now,
+      } : prev);
       toast.success('Checked in successfully');
-    } catch (err: any) {
-      toast.error('Check-in Failed', err.message || 'Check-in failed');
+    } catch (err: unknown) {
+      toast.error('Check-in Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -106,32 +199,48 @@ export default function DoctorAttendance() {
     if (!shift) return;
     try {
       setSubmitting(true);
+      let position: GpsPosition;
+      try {
+        position = await requestGps();
+      } catch {
+        toast.error('GPS Required', 'Please enable location services to check out.');
+        setSubmitting(false);
+        return;
+      }
+      const qrCode = prompt('Scan or enter the facility QR code:');
+      if (!qrCode || !qrCode.trim()) {
+        toast.error('QR code is required for check-out');
+        setSubmitting(false);
+        return;
+      }
       await api.post('/attendance/check-out', {
         bookingId: shift.bookingId,
-        qrCode: 'demo-qr-token',
-        latitude: 24.8607,
-        longitude: 67.0011,
+        qrCode: qrCode.trim(),
+        latitude: position.latitude,
+        longitude: position.longitude,
       });
       setAttendanceState('Check-in');
       toast.success('Checked out successfully');
       fetchActiveShift();
-    } catch (err: any) {
-      toast.error('Check-out Failed', err.message || 'Check-out failed');
+    } catch (err: unknown) {
+      toast.error('Check-out Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handlePresencePing = async () => {
+  const handlePresenceRefresh = async () => {
     if (!shift) return;
     try {
-      await api.post('/attendance/presence-ping', {
-        bookingId: shift.bookingId,
-        latitude: 24.8607,
-        longitude: 67.0011,
-      });
-    } catch (err: any) {
-      toast.error('Ping Failed', err.message || 'Presence ping failed');
+      const data = await api.get<{ events: ApiAttendanceEvent[] }>(`/attendance/${shift.bookingId}`);
+      const events = data?.events || [];
+      const checkOutEvent = events.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_out');
+      if (checkOutEvent) {
+        setAttendanceState('Check-out');
+      }
+      toast.success('Attendance refreshed');
+    } catch (err: unknown) {
+      toast.error('Refresh Failed', getErrorMessage(err));
     }
   };
 
@@ -213,12 +322,25 @@ export default function DoctorAttendance() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="border border-emerald-200 bg-emerald-50 rounded-xl p-5 flex flex-col items-center justify-center text-center">
-                    <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-3">
-                      <Map className="w-6 h-6" />
+                  <div className={`border rounded-xl p-5 flex flex-col items-center justify-center text-center ${
+                    gps ? 'border-emerald-200 bg-emerald-50' : gpsError ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-slate-50'
+                  }`}>
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 ${
+                      gps ? 'bg-emerald-100 text-emerald-600' : gpsError ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-400'
+                    }`}>
+                      {gpsLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : <Map className="w-6 h-6" />}
                     </div>
-                    <h3 className="text-sm font-bold text-emerald-900 mb-1">Geofence Verified</h3>
-                    <p className="text-xs text-emerald-700">You are within the facility radius.</p>
+                    <h3 className={`text-sm font-bold mb-1 ${gps ? 'text-emerald-900' : gpsError ? 'text-red-900' : 'text-slate-900'}`}>
+                      {gpsLoading ? 'Detecting Location...' : gps ? 'Location Detected' : gpsError ? 'Location Error' : 'Location Required'}
+                    </h3>
+                    <p className={`text-xs ${gps ? 'text-emerald-700' : gpsError ? 'text-red-600' : 'text-slate-500'}`}>
+                      {gps ? 'GPS position acquired for geofence check.' : gpsError || 'Tap Check-in to share your location.'}
+                    </p>
+                    {!gps && !gpsLoading && (
+                      <button onClick={() => requestGps().catch(() => {})} className="mt-2 text-xs font-bold text-indigo-600 hover:text-indigo-700">
+                        Detect Location
+                      </button>
+                    )}
                   </div>
                   <div className="border border-slate-200 bg-slate-50 rounded-xl p-5 flex flex-col items-center justify-center text-center">
                     <div className="w-12 h-12 bg-white text-slate-400 rounded-full flex items-center justify-center mb-3 border border-slate-200 shadow-sm">
@@ -247,10 +369,10 @@ export default function DoctorAttendance() {
                     <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" strokeWidth="8" />
                   </svg>
                   <svg className="absolute inset-0 w-full h-full text-emerald-500 transform -rotate-90" viewBox="0 0 100 100">
-                    <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" strokeWidth="8" strokeDasharray="283" strokeDashoffset="140" strokeLinecap="round" />
+                    <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" strokeWidth="8" strokeDasharray="283" strokeDashoffset={Math.round(283 * (1 - (shift?.checkInRaw ? calcElapsedFraction(shift.checkInRaw, 12) : 0)))} strokeLinecap="round" />
                   </svg>
                   <div className="flex flex-col items-center">
-                    <span className="text-3xl font-bold text-slate-900">04:32</span>
+                    <span className="text-3xl font-bold text-slate-900">{elapsedStr}</span>
                     <span className="text-xs font-medium text-slate-500 uppercase tracking-wider mt-1">Hours Elapsed</span>
                   </div>
                 </div>
@@ -261,8 +383,8 @@ export default function DoctorAttendance() {
                 </div>
 
                 <div className="w-full space-y-3 pt-4">
-                  <button onClick={handlePresencePing} className="w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 transition-colors flex items-center justify-center gap-2">
-                    <Activity className="w-5 h-5 text-emerald-500" /> Send Presence Ping
+                  <button onClick={handlePresenceRefresh} className="w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 transition-colors flex items-center justify-center gap-2">
+                    <Activity className="w-5 h-5 text-emerald-500" /> Refresh Attendance Status
                   </button>
                   <button 
                     onClick={() => setAttendanceState('Check-out')}
@@ -288,15 +410,15 @@ export default function DoctorAttendance() {
                 <div className="bg-slate-50 rounded-xl p-5 border border-slate-200 space-y-4">
                   <div className="flex justify-between items-center pb-4 border-b border-slate-200">
                     <span className="text-sm font-medium text-slate-600">Check-in Time</span>
-                    <span className="text-sm font-bold text-slate-900">19:55 PM</span>
+                    <span className="text-sm font-bold text-slate-900">{shift.checkInTime || '--'}</span>
                   </div>
                   <div className="flex justify-between items-center pb-4 border-b border-slate-200">
                     <span className="text-sm font-medium text-slate-600">Current Time</span>
-                    <span className="text-sm font-bold text-slate-900">08:05 AM</span>
+                    <span className="text-sm font-bold text-slate-900">{new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm font-medium text-slate-600">Total Duration</span>
-                    <span className="text-sm font-bold text-emerald-600">12h 10m</span>
+                    <span className="text-sm font-bold text-emerald-600">{shift.checkInRaw ? formatElapsed(shift.checkInRaw) : '--'}h</span>
                   </div>
                 </div>
 

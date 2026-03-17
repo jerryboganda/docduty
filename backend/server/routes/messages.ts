@@ -9,6 +9,13 @@ import { getDb } from '../database/schema.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { notifyUser, notifyBooking } from '../utils/pusher.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { logger } from '../utils/logger.js';
+import type { BookingRow } from '../types.js';
+
+/** Row returned by the sender display name query. */
+interface SenderDisplayRow {
+  display_name: string | null;
+}
 
 export const messagesRouter = Router();
 messagesRouter.use(authMiddleware);
@@ -39,8 +46,9 @@ messagesRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response) => 
     const db = getDb();
     const conversations = await db.prepare(conversationsQuery).all(req.user!.userId, req.user!.userId, req.user!.userId);
     res.json({ conversations });
-  } catch (err: any) {
-    console.error('[Messages Conversations]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Conversations list failed', { error: message });
     res.status(500).json({ error: 'Failed to get conversations' });
   }
 }));
@@ -50,8 +58,9 @@ messagesRouter.get('/conversations', asyncHandler(async (req: AuthRequest, res: 
     const db = getDb();
     const conversations = await db.prepare(conversationsQuery).all(req.user!.userId, req.user!.userId, req.user!.userId);
     res.json({ conversations });
-  } catch (err: any) {
-    console.error('[Messages Conversations]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Conversations list failed', { error: message });
     res.status(500).json({ error: 'Failed to get conversations' });
   }
 }));
@@ -60,7 +69,7 @@ messagesRouter.get('/:bookingId', asyncHandler(async (req: AuthRequest, res: Res
   try {
     const db = getDb();
     const bookingId = req.params.bookingId;
-    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as any;
+    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as BookingRow | undefined;
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
 
     if (
@@ -72,6 +81,13 @@ messagesRouter.get('/:bookingId', asyncHandler(async (req: AuthRequest, res: Res
       return;
     }
 
+    // M-035: Add pagination to messages
+    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit ?? '50'), 10) || 50));
+    const offset = (page - 1) * limit;
+
+    const totalRow = await db.prepare('SELECT COUNT(*)::int AS count FROM messages WHERE booking_id = ?').get(bookingId) as { count: number } | undefined;
+
     const messages = await db.prepare(`
       SELECT m.*, dp.full_name as sender_name, u.role as sender_role
       FROM messages m
@@ -79,11 +95,13 @@ messagesRouter.get('/:bookingId', asyncHandler(async (req: AuthRequest, res: Res
       LEFT JOIN doctor_profiles dp ON dp.user_id = m.sender_id
       WHERE m.booking_id = ?
       ORDER BY m.created_at ASC
-    `).all(bookingId);
+      LIMIT ? OFFSET ?
+    `).all(bookingId, limit, offset);
 
-    res.json({ messages });
-  } catch (err: any) {
-    console.error('[Messages Get]', err.message);
+    res.json({ messages, total: totalRow?.count ?? 0, page, limit });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Messages get failed', { error: message });
     res.status(500).json({ error: 'Failed to get messages' });
   }
 }));
@@ -99,13 +117,19 @@ messagesRouter.post('/:bookingId', asyncHandler(async (req: AuthRequest, res: Re
       return;
     }
 
+    // M-034: Message length limit
+    if (String(content).length > 5000) {
+      res.status(400).json({ error: 'Message content must be at most 5000 characters' });
+      return;
+    }
+
     const phiPatterns = /\b(patient|MR#|medical\s*record|diagnosis|treatment)\b/i;
     if (phiPatterns.test(content)) {
       res.status(400).json({ error: 'Messages must not contain patient health information (PHI)' });
       return;
     }
 
-    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as any;
+    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId) as BookingRow | undefined;
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
 
     if (booking.doctor_id !== req.user!.userId && booking.poster_id !== req.user!.userId && req.user!.role !== 'platform_admin') {
@@ -123,7 +147,7 @@ messagesRouter.post('/:bookingId', asyncHandler(async (req: AuthRequest, res: Re
     await db.prepare(`
       INSERT INTO notifications (id, user_id, type, title, body, data)
       VALUES (?, ?, 'new_message', 'New Message', 'You have a new message', ?)
-    `).run(uuidv4(), recipientId, { bookingId, messageId });
+    `).run(uuidv4(), recipientId, JSON.stringify({ bookingId, messageId }));
 
     const senderProfile = await db.prepare(`
       SELECT
@@ -136,7 +160,7 @@ messagesRouter.post('/:bookingId', asyncHandler(async (req: AuthRequest, res: Re
       LEFT JOIN doctor_profiles dp ON dp.user_id = u.id
       LEFT JOIN facility_accounts fa ON fa.user_id = u.id
       WHERE u.id = ?
-    `).get(req.user!.userId) as any;
+    `).get(req.user!.userId) as SenderDisplayRow | undefined;
     const senderName = senderProfile?.display_name || 'User';
 
     notifyBooking(bookingId, {
@@ -156,8 +180,9 @@ messagesRouter.post('/:bookingId', asyncHandler(async (req: AuthRequest, res: Re
     });
 
     res.status(201).json({ messageId, message: 'Message sent' });
-  } catch (err: any) {
-    console.error('[Messages Send]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Message send failed', { error: message });
     res.status(500).json({ error: 'Failed to send message' });
   }
 }));

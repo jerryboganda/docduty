@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
 import { env } from '../config.js';
 import { getDb } from './schema.js';
+import { logger } from '../utils/logger.js';
 
 const UUID_NAMESPACE = '4d7f2c8d-5f6f-4e9a-b8ba-b8d990c5fd61';
 
@@ -198,7 +199,7 @@ export async function seedReferenceData(): Promise<void> {
     }
   })();
 
-  console.log('[Seed] Reference data ensured');
+  logger.info('Reference data ensured');
 
   if (env.seedDemoData) {
     await seedDemoData();
@@ -212,7 +213,7 @@ async function seedDemoData(): Promise<void> {
   ).get();
 
   if ((existingUsers?.count ?? 0) > 0) {
-    console.log('[Seed] Demo data already seeded, skipping');
+    logger.info('Demo data already seeded, skipping');
     return;
   }
 
@@ -366,7 +367,7 @@ async function seedDemoData(): Promise<void> {
     await db.prepare(`INSERT INTO offers (id, shift_id, doctor_id, type, status) VALUES (?, ?, ?, 'dispatch', 'pending')`)
       .run(uuidv4(), shift1Id, doc2UserId);
     await db.prepare(`INSERT INTO notifications (id, user_id, type, title, body, data) VALUES (?, ?, 'shift_offer', 'New Shift Available', 'Emergency Duty Cover - PKR 10,800', ?)`)
-      .run(uuidv4(), doc2UserId, { shiftId: shift1Id });
+      .run(uuidv4(), doc2UserId, JSON.stringify({ shiftId: shift1Id }));
 
     const shift2Id = uuidv4();
     const s2Start = new Date(dayAfter); s2Start.setHours(9, 0, 0, 0);
@@ -475,16 +476,16 @@ async function seedDemoData(): Promise<void> {
     await db.prepare(`
       INSERT INTO notifications (id, user_id, type, title, body, data, is_read, created_at)
       VALUES (?, ?, 'booking_confirmed', 'Booking Confirmed', 'Your night duty shift has been accepted by Dr. Ahmed Khan.', ?, ?, ?)
-    `).run(uuidv4(), facilityUserId, {}, true, new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    `).run(uuidv4(), facilityUserId, JSON.stringify({}), true, new Date(now.getTime() - 24 * 60 * 60 * 1000));
     await db.prepare(`
       INSERT INTO notifications (id, user_id, type, title, body, data, is_read, created_at)
       VALUES (?, ?, 'shift_offer', 'New Shift Available', 'OPD General Medicine Slot - PKR 7,200', ?, ?, ?)
-    `).run(uuidv4(), doc1UserId, {}, false, new Date(now.getTime() - 2 * 60 * 60 * 1000));
+    `).run(uuidv4(), doc1UserId, JSON.stringify({}), false, new Date(now.getTime() - 2 * 60 * 60 * 1000));
     await db.prepare(`
       INSERT INTO notifications (id, user_id, type, title, body, data, is_read, created_at)
       VALUES (?, ?, 'check_out', 'Shift Completed', 'Your OPD shift has been completed. Payment of PKR 7,200 has been processed.', ?, ?, ?)
-    `).run(uuidv4(), doc2UserId, {}, true, new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
+    `).run(uuidv4(), doc2UserId, JSON.stringify({}), true, new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
   })();
 
-  console.log('[Seed] Demo data seeded');
+  logger.info('Demo data seeded');
 }

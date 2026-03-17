@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --config ../web-app/vite.config.ts --port=3000 --host=0.0.0.0",
+    "dev": "tsx server/index.ts --watch",
     "server": "tsx server/index.ts",
     "dev:full": "concurrently \"npm run server\" \"npm run dev\"",
     "build": "vite build --config ../web-app/vite.config.ts",

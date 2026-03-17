@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../database/schema.js';
 import { authMiddleware, type AuthRequest, requireRole } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { WalletRow, PayoutRow } from '../types.js';
 
 export const walletsRouter = Router();
 walletsRouter.use(authMiddleware);
@@ -24,7 +25,7 @@ walletsRouter.get(
   ['/balance', '/me'],
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const wallet = await db.prepare<any>('SELECT * FROM wallets WHERE user_id = ?').get(req.user!.userId);
+    const wallet = await db.prepare<WalletRow>('SELECT * FROM wallets WHERE user_id = ?').get(req.user!.userId);
 
     if (!wallet) {
       res.status(404).json({ error: 'Wallet not found' });
@@ -56,7 +57,7 @@ walletsRouter.get(
   ['/transactions', '/ledger'],
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const wallet = await db.prepare<any>('SELECT id FROM wallets WHERE user_id = ?').get(req.user!.userId);
+    const wallet = await db.prepare<Pick<WalletRow, 'id'>>('SELECT id FROM wallets WHERE user_id = ?').get(req.user!.userId);
     if (!wallet) {
       res.status(404).json({ error: 'Wallet not found' });
       return;
@@ -121,7 +122,7 @@ walletsRouter.post(
     }
 
     const userId = targetUserId || req.user!.userId;
-    const wallet = await db.prepare<any>('SELECT * FROM wallets WHERE user_id = ?').get(userId);
+    const wallet = await db.prepare<WalletRow>('SELECT * FROM wallets WHERE user_id = ?').get(userId);
     if (!wallet) {
       res.status(404).json({ error: 'Wallet not found' });
       return;
@@ -165,35 +166,43 @@ walletsRouter.post(
       return;
     }
 
-    const wallet = await db.prepare<any>('SELECT * FROM wallets WHERE user_id = ?').get(req.user!.userId);
+    const wallet = await db.prepare<WalletRow>('SELECT * FROM wallets WHERE user_id = ?').get(req.user!.userId);
     if (!wallet) {
       res.status(404).json({ error: 'Wallet not found' });
       return;
     }
 
-    const available = wallet.balance_pkr - wallet.held_pkr;
-    if (amountPkr > available) {
-      res.status(400).json({ error: `Insufficient balance. Available: PKR ${available}` });
-      return;
-    }
-
     const payoutId = uuidv4();
     await db.transaction(async () => {
+      // Re-check balance inside transaction with row-level lock to prevent race conditions
+      const lockedWallet = await db.prepare<WalletRow>(
+        'SELECT * FROM wallets WHERE id = ? FOR UPDATE'
+      ).get(wallet.id);
+
+      if (!lockedWallet) {
+        throw new Error('Wallet not found during lock');
+      }
+
+      const available = lockedWallet.balance_pkr - lockedWallet.held_pkr;
+      if (amountPkr > available) {
+        throw new Error(`Insufficient balance. Available: PKR ${available}`);
+      }
+
       await db.prepare(`
         INSERT INTO payouts (id, wallet_id, amount_pkr, status, payment_method)
         VALUES (?, ?, ?, 'pending', ?)
-      `).run(payoutId, wallet.id, amountPkr, paymentMethod || 'bank_transfer');
+      `).run(payoutId, lockedWallet.id, amountPkr, paymentMethod || 'bank_transfer');
 
       await db.prepare(`
         UPDATE wallets
         SET balance_pkr = balance_pkr - ?, total_spent_pkr = total_spent_pkr + ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(amountPkr, amountPkr, wallet.id);
+      `).run(amountPkr, amountPkr, lockedWallet.id);
 
       await db.prepare(`
         INSERT INTO ledger_transactions (id, wallet_id, type, amount_pkr, direction, description, reference_id)
         VALUES (?, ?, 'withdrawal', ?, 'debit', 'Payout request', ?)
-      `).run(uuidv4(), wallet.id, amountPkr, payoutId);
+      `).run(uuidv4(), lockedWallet.id, amountPkr, payoutId);
     })();
 
     res.json({ payoutId, message: 'Payout request submitted', status: 'pending' });
@@ -208,13 +217,13 @@ walletsRouter.get(
   '/payouts',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const wallet = await db.prepare<any>('SELECT id FROM wallets WHERE user_id = ?').get(req.user!.userId);
+    const wallet = await db.prepare<Pick<WalletRow, 'id'>>('SELECT id FROM wallets WHERE user_id = ?').get(req.user!.userId);
     if (!wallet) {
       res.status(404).json({ error: 'Wallet not found' });
       return;
     }
 
-    const payouts = await db.prepare('SELECT * FROM payouts WHERE wallet_id = ? ORDER BY created_at DESC').all(wallet.id);
+    const payouts = await db.prepare<PayoutRow>('SELECT * FROM payouts WHERE wallet_id = ? ORDER BY created_at DESC').all(wallet.id);
     res.json({ payouts });
   }),
 );

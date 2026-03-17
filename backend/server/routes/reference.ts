@@ -2,13 +2,13 @@
  * Reference Data Routes - Public/read-only reference data
  */
 
-import { Router, Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { getDb } from '../database/schema.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 export const referenceRouter = Router();
 
-referenceRouter.get('/provinces', asyncHandler(async (_req: any, res: Response) => {
+referenceRouter.get('/provinces', asyncHandler(async (_req: Request, res: Response) => {
   try {
     const db = getDb();
     const provinces = await db.prepare('SELECT * FROM provinces ORDER BY name').all();
@@ -18,7 +18,7 @@ referenceRouter.get('/provinces', asyncHandler(async (_req: any, res: Response) 
   }
 }));
 
-referenceRouter.get('/cities', asyncHandler(async (req: any, res: Response) => {
+referenceRouter.get('/cities', asyncHandler(async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const { provinceId } = req.query;
@@ -31,7 +31,7 @@ referenceRouter.get('/cities', asyncHandler(async (req: any, res: Response) => {
   }
 }));
 
-referenceRouter.get('/specialties', asyncHandler(async (_req: any, res: Response) => {
+referenceRouter.get('/specialties', asyncHandler(async (_req: Request, res: Response) => {
   try {
     const db = getDb();
     const specialties = await db.prepare('SELECT * FROM specialties ORDER BY name').all();
@@ -41,7 +41,7 @@ referenceRouter.get('/specialties', asyncHandler(async (_req: any, res: Response
   }
 }));
 
-referenceRouter.get('/roles', asyncHandler(async (_req: any, res: Response) => {
+referenceRouter.get('/roles', asyncHandler(async (_req: Request, res: Response) => {
   try {
     const db = getDb();
     const roles = await db.prepare('SELECT * FROM roles ORDER BY name').all();
@@ -51,7 +51,7 @@ referenceRouter.get('/roles', asyncHandler(async (_req: any, res: Response) => {
   }
 }));
 
-referenceRouter.get('/skills', asyncHandler(async (_req: any, res: Response) => {
+referenceRouter.get('/skills', asyncHandler(async (_req: Request, res: Response) => {
   try {
     const db = getDb();
     const skills = await db.prepare('SELECT * FROM skills ORDER BY name').all();
@@ -61,7 +61,7 @@ referenceRouter.get('/skills', asyncHandler(async (_req: any, res: Response) => 
   }
 }));
 
-referenceRouter.get('/policies', asyncHandler(async (_req: any, res: Response) => {
+referenceRouter.get('/policies', asyncHandler(async (_req: Request, res: Response) => {
   try {
     const db = getDb();
     const policies = await db.prepare(`

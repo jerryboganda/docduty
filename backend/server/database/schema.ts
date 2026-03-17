@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Pool, types, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
 import { env, getPgSslConfig } from '../config.js';
+import { logger } from '../utils/logger.js';
 import { runMigrations } from './migrate.js';
 import { getPgMemPool, isPgMemUrl, resetPgMem } from './pgmem.js';
 
@@ -67,7 +68,7 @@ function createRuntimePool(): Pool {
   });
 
   pool.on('error', (error) => {
-    console.error('[Database Pool]', error.message);
+    logger.error('Database pool error', { error: error.message });
   });
 
   return pool;
@@ -95,7 +96,7 @@ async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
       return await operation();
     } catch (error) {
       lastError = error as Error;
-      console.error(`[Database Init] Attempt ${attempt}/${env.database.retryMaxAttempts} failed: ${lastError.message}`);
+      logger.error(`Database init attempt ${attempt}/${env.database.retryMaxAttempts} failed`, { error: lastError.message });
       if (attempt < env.database.retryMaxAttempts) {
         await delay(env.database.retryBackoffMs * attempt);
       }

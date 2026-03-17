@@ -6,7 +6,9 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
 import { useToast } from '../contexts/ToastContext';
+import type { SkillsResponse, SpecialtiesResponse, FacilityLocationsResponse, ApiSkill, ApiSpecialty, ApiFacilityLocation, ApiShift } from '../types/api';
 
 type ViewState = 'form' | 'loading' | 'error' | 'success';
 
@@ -19,8 +21,8 @@ export default function PostShift() {
   const [allowCounter, setAllowCounter] = useState(false);
   const [totalPay, setTotalPay] = useState<string>('15000');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
-  const [role, setRole] = useState('Emergency Room (ER) Physician');
-  const [location, setLocation] = useState('Main Campus');
+  const [role, setRole] = useState('');
+  const [location, setLocation] = useState('');
   const [startDateTime, setStartDateTime] = useState('');
   const [endDateTime, setEndDateTime] = useState('');
   const [notes, setNotes] = useState('');
@@ -31,40 +33,38 @@ export default function PostShift() {
   const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string }[]>([]);
   const [availableLocations, setAvailableLocations] = useState<{ id: string; name: string; address?: string }[]>([]);
 
-  // Load reference data from API
+  // Load reference data from API (no hardcoded fallbacks — show empty state on failure)
   useEffect(() => {
     // Skills
-    api.get<any>('/reference/skills', true).then((data) => {
+    api.get<SkillsResponse>('/reference/skills', true).then((data) => {
       const skills = data?.skills || data;
       if (skills && Array.isArray(skills)) {
-        setAvailableSkills(skills.map((s: any) => s.name));
-      } else {
-        setAvailableSkills(['ACLS', 'BLS', 'PALS', 'ATLS', 'Intubation', 'Central Line', 'Ventilator Management']);
+        setAvailableSkills(skills.map((s: ApiSkill) => s.name));
       }
     }).catch(() => {
-      setAvailableSkills(['ACLS', 'BLS', 'PALS', 'ATLS', 'Intubation', 'Central Line', 'Ventilator Management']);
+      // leave availableSkills empty — UI will show nothing to select
     });
 
-    // Specialties/Roles
-    api.get<any>('/reference/specialties', true).then((data) => {
+    // Specialties/Roles — role state stores the specialty ID
+    api.get<SpecialtiesResponse>('/reference/specialties', true).then((data) => {
       const specialties = data?.specialties || data;
       if (specialties && Array.isArray(specialties)) {
-        setAvailableRoles(specialties.map((s: any) => ({ id: s.id, name: s.name })));
-        if (specialties.length > 0) setRole(specialties[0].name);
+        setAvailableRoles(specialties.map((s: ApiSpecialty) => ({ id: s.id, name: s.name })));
+        if (specialties.length > 0) setRole(specialties[0].id);
       }
     }).catch(() => {
-      setAvailableRoles([{ id: '1', name: 'Emergency Room (ER) Physician' }, { id: '2', name: 'ICU Specialist' }, { id: '3', name: 'General Ward Medical Officer' }, { id: '4', name: 'Pediatrician' }]);
+      // leave availableRoles empty
     });
 
-    // Facility Locations
-    api.get<any>('/facilities/locations').then((data) => {
+    // Facility Locations — location state stores the location ID
+    api.get<FacilityLocationsResponse>('/facilities/locations').then((data) => {
       const locations = data?.locations || data;
       if (locations && Array.isArray(locations)) {
-        setAvailableLocations(locations.map((l: any) => ({ id: l.id, name: l.name, address: l.address })));
-        if (locations.length > 0) setLocation(locations[0].name);
+        setAvailableLocations(locations.map((l: ApiFacilityLocation) => ({ id: l.id, name: l.name, address: l.address })));
+        if (locations.length > 0) setLocation(locations[0].id);
       }
     }).catch(() => {
-      setAvailableLocations([{ id: '1', name: 'Main Campus' }]);
+      // leave availableLocations empty
     });
     // Set default dates
     const now = new Date();
@@ -82,11 +82,37 @@ export default function PostShift() {
   const platformFee = Math.max(numericPay * platformFeeRate, 200);
   const doctorNet = numericPay - platformFee;
 
+  // Derive display names from IDs for preview
+  const roleName = availableRoles.find(r => r.id === role)?.name || '';
+  const locationName = availableLocations.find(l => l.id === location)?.name || '';
+
   const toggleSkill = (skill: string) => {
     if (selectedSkills.includes(skill)) {
       setSelectedSkills(selectedSkills.filter(s => s !== skill));
     } else {
       setSelectedSkills([...selectedSkills, skill]);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    try {
+      await api.post('/shifts', {
+        specialtyId: role,
+        facilityLocationId: location,
+        type: shiftType,
+        startTime: startDateTime ? new Date(startDateTime).toISOString() : undefined,
+        endTime: endDateTime ? new Date(endDateTime).toISOString() : undefined,
+        offeredRate: numericPay || undefined,
+        visibility,
+        allowCounterOffers: allowCounter,
+        requiredSkills: selectedSkills,
+        notes: notes || undefined,
+        status: 'draft',
+      });
+      toast.success('Draft saved');
+      navigate('/facility/shifts');
+    } catch (err: unknown) {
+      toast.error('Failed to save draft', getErrorMessage(err));
     }
   };
 
@@ -106,8 +132,9 @@ export default function PostShift() {
     setViewState('loading');
 
     try {
-      const data = await api.post<any>('/shifts', {
-        role,
+      const data = await api.post<ApiShift & { shift?: ApiShift }>('/shifts', {
+        specialtyId: role,
+        facilityLocationId: location,
         type: shiftType,
         startTime: new Date(startDateTime).toISOString(),
         endTime: new Date(endDateTime).toISOString(),
@@ -120,8 +147,8 @@ export default function PostShift() {
 
       setCreatedShiftId(data.id || data.shift?.id);
       setViewState('success');
-    } catch (err: any) {
-      setErrors({ api: err.message || 'Failed to publish shift' });
+    } catch (err: unknown) {
+      setErrors({ api: getErrorMessage(err) });
       setViewState('error');
     }
   };
@@ -225,7 +252,7 @@ export default function PostShift() {
                     className="w-full h-11 pl-3 pr-10 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-primary focus:border-transparent appearance-none outline-none"
                   >
                     {availableRoles.length > 0 ? availableRoles.map(r => (
-                      <option key={r.id} value={r.name}>{r.name}</option>
+                      <option key={r.id} value={r.id}>{r.name}</option>
                     )) : (
                       <option>Loading...</option>
                     )}
@@ -244,7 +271,7 @@ export default function PostShift() {
                     className="w-full h-11 pl-10 pr-10 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-primary focus:border-transparent appearance-none outline-none"
                   >
                     {availableLocations.length > 0 ? availableLocations.map(loc => (
-                      <option key={loc.id} value={loc.name}>{loc.name}</option>
+                      <option key={loc.id} value={loc.id}>{loc.name}</option>
                     )) : (
                       <option>Loading...</option>
                     )}
@@ -438,8 +465,8 @@ export default function PostShift() {
                       }`}>
                         {shiftType}
                       </span>
-                      <h4 className="text-lg font-bold text-slate-900 leading-tight">{role || 'Select Role'}</h4>
-                      <p className="text-sm text-slate-500 mt-1">{location || 'Select Location'}</p>
+                      <h4 className="text-lg font-bold text-slate-900 leading-tight">{roleName || 'Select Role'}</h4>
+                      <p className="text-sm text-slate-500 mt-1">{locationName || 'Select Location'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-lg font-bold text-emerald-600">Rs. {doctorNet.toLocaleString()}</p>
@@ -484,7 +511,7 @@ export default function PostShift() {
                 Publish Shift
               </button>
               <div className="flex gap-3">
-                <button onClick={() => { toast.success('Draft saved'); navigate('/facility/shifts'); }} className="flex-1 py-2.5 bg-white border border-slate-200 text-slate-700 font-medium rounded-xl hover:bg-slate-50 transition-colors">
+                <button onClick={handleSaveDraft} className="flex-1 py-2.5 bg-white border border-slate-200 text-slate-700 font-medium rounded-xl hover:bg-slate-50 transition-colors">
                   Save Draft
                 </button>
                 <button onClick={() => navigate('/facility/shifts')} className="flex-1 py-2.5 bg-white border border-slate-200 text-red-600 font-medium rounded-xl hover:bg-red-50 transition-colors">
@@ -499,7 +526,7 @@ export default function PostShift() {
 
       {/* Mobile Sticky Actions */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] lg:hidden z-20 flex gap-3">
-        <button onClick={() => { toast.success('Draft saved'); navigate('/facility/shifts'); }} className="px-4 py-3 bg-white border border-slate-200 text-slate-700 font-medium rounded-xl hover:bg-slate-50 transition-colors">
+        <button onClick={handleSaveDraft} className="px-4 py-3 bg-white border border-slate-200 text-slate-700 font-medium rounded-xl hover:bg-slate-50 transition-colors">
           Draft
         </button>
         <button onClick={handlePublish} className="flex-1 py-3 bg-primary text-white font-bold rounded-xl shadow-lg shadow-primary/20 hover:bg-primary/90 transition-colors">

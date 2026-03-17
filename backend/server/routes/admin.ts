@@ -16,8 +16,74 @@ import {
   type DoctorVerificationStatus,
 } from '../utils/doctorVerification.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type {
+  DoctorVerificationRow,
+  UserRow,
+  FacilityLocationRow,
+  PolicyConfigRow,
+  PayoutRow,
+} from '../types.js';
 
 type CountRow = { count?: number; c?: number; total?: number };
+
+type VerificationListRow = {
+  id: string;
+  current_status: string;
+  submission_version: number;
+  submitted_at: string | null;
+  review_started_at: string | null;
+  reviewed_at: string | null;
+  approved_at: string | null;
+  reviewed_by: string | null;
+  user_visible_note: string | null;
+  rejection_reason_code: string | null;
+  rejection_reason_text: string | null;
+  resubmission_reason_text: string | null;
+  missing_items_json: unknown;
+  flagged_items_json: unknown;
+  user_id: string;
+  phone: string;
+  email: string | null;
+  created_at: string;
+  full_name: string;
+  cnic: string | null;
+  pmdc_license: string | null;
+  experience_years: number;
+  specialty_name: string | null;
+  city_name: string | null;
+};
+
+type ShiftAnalyticsRow = {
+  total: number;
+  open: number;
+  completed: number;
+  cancelled: number;
+};
+
+type BookingAnalyticsRow = {
+  total: number;
+  completed: number;
+  no_show: number;
+  disputed: number;
+};
+
+type DisputeAnalyticsRow = {
+  total: number;
+  open: number;
+  resolved: number;
+};
+
+type UserAnalyticsRow = {
+  total: number;
+  doctors: number;
+  facilities: number;
+  new_this_period: number;
+};
+
+type FinancialAnalyticsRow = {
+  total_platform_fees: number;
+  total_payouts: number;
+};
 
 export const adminRouter = Router();
 adminRouter.use(authMiddleware);
@@ -137,7 +203,7 @@ adminRouter.get(
       params.push(specialty);
     }
 
-    const verifications = await db.prepare(`
+    const verifications = await db.prepare<VerificationListRow>(`
       SELECT
         dv.id,
         dv.current_status,
@@ -172,7 +238,7 @@ adminRouter.get(
       ORDER BY COALESCE(dv.submitted_at, dv.updated_at) ASC
     `).all(...params);
 
-    const data = verifications.map((verification: any) => ({
+    const data = verifications.map((verification) => ({
       ...verification,
       descriptor: getSummaryDescriptor(verification.current_status as DoctorVerificationStatus),
     }));
@@ -204,7 +270,20 @@ adminRouter.get(
   '/verifications/:verificationId',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const verification = await db.prepare<any>(`
+    const verification = await db.prepare<DoctorVerificationRow & {
+      user_id: string;
+      phone: string;
+      email: string | null;
+      avatar_url: string | null;
+      full_name: string;
+      cnic: string | null;
+      pmdc_license: string | null;
+      bio: string | null;
+      experience_years: number;
+      specialty_name: string | null;
+      city_name: string | null;
+      reviewer_phone: string | null;
+    }>(`
       SELECT
         dv.*,
         u.id AS user_id,
@@ -261,7 +340,7 @@ adminRouter.post(
   '/verifications/:verificationId/claim',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const verification = await db.prepare<any>('SELECT * FROM doctor_verifications WHERE id = ?').get(req.params.verificationId);
+    const verification = await db.prepare<DoctorVerificationRow>('SELECT * FROM doctor_verifications WHERE id = ?').get(req.params.verificationId);
     if (!verification) {
       res.status(404).json({ error: 'Verification record not found' });
       return;
@@ -273,6 +352,11 @@ adminRouter.post(
       WHERE id = ?
       RETURNING *
     `).get(req.user!.userId, verification.id);
+
+    if (!updated) {
+      res.status(500).json({ error: 'Failed to update verification record' });
+      return;
+    }
 
     await syncLegacyUserVerificationStatus(updated.doctor_user_id, updated.current_status);
     await appendVerificationAuditLog({
@@ -301,7 +385,7 @@ async function completeVerificationReview(params: {
   flaggedItems?: Array<Record<string, unknown>>;
 }) {
   const db = getDb();
-  const verification = await db.prepare<any>('SELECT * FROM doctor_verifications WHERE id = ?').get(params.verificationId);
+  const verification = await db.prepare<DoctorVerificationRow>('SELECT * FROM doctor_verifications WHERE id = ?').get(params.verificationId);
   if (!verification) {
     throw new Error('Verification record not found');
   }
@@ -350,6 +434,10 @@ async function completeVerificationReview(params: {
     params.newStatus,
     verification.id,
   );
+
+  if (!updated) {
+    throw new Error('Failed to update verification record');
+  }
 
   await syncLegacyUserVerificationStatus(updated.doctor_user_id, updated.current_status);
   await db.prepare(`
@@ -458,7 +546,7 @@ adminRouter.post(
   '/verifications/:verificationId/reopen',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const verification = await db.prepare<any>('SELECT * FROM doctor_verifications WHERE id = ?').get(req.params.verificationId);
+    const verification = await db.prepare<DoctorVerificationRow>('SELECT * FROM doctor_verifications WHERE id = ?').get(req.params.verificationId);
     if (!verification) {
       res.status(404).json({ error: 'Verification record not found' });
       return;
@@ -483,6 +571,11 @@ adminRouter.post(
       req.body.internalNote || null,
       verification.id,
     );
+
+    if (!updated) {
+      res.status(500).json({ error: 'Failed to update verification record' });
+      return;
+    }
 
     await syncLegacyUserVerificationStatus(updated.doctor_user_id, updated.current_status);
     await appendVerificationAuditLog({
@@ -544,7 +637,7 @@ adminRouter.put(
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
     const { status: newStatus, reason } = req.body;
-    const user = await db.prepare<any>('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const user = await db.prepare<UserRow>('SELECT * FROM users WHERE id = ?').get(req.params.id);
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -556,6 +649,12 @@ adminRouter.put(
     }
 
     await db.prepare('UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStatus, user.id);
+
+    // H-013: Invalidate all refresh tokens when user is suspended/banned
+    if (newStatus === 'suspended' || newStatus === 'banned') {
+      await db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(user.id);
+    }
+
     await logAudit({
       userId: req.user!.userId,
       action: newStatus === 'suspended' ? 'suspend_user' : 'unsuspend_user',
@@ -626,7 +725,7 @@ adminRouter.put(
   '/facilities/:id/rotate-qr',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const location = await db.prepare<any>('SELECT * FROM facility_locations WHERE id = ?').get(req.params.id);
+    const location = await db.prepare<FacilityLocationRow>('SELECT * FROM facility_locations WHERE id = ?').get(req.params.id);
 
     if (!location) {
       res.status(404).json({ error: 'Location not found' });
@@ -654,7 +753,7 @@ adminRouter.put(
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
     const { reason } = req.body;
-    const user = await db.prepare<any>('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const user = await db.prepare<UserRow>('SELECT * FROM users WHERE id = ?').get(req.params.id);
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -663,6 +762,12 @@ adminRouter.put(
 
     const newStatus = user.status === 'banned' ? 'active' : 'banned';
     await db.prepare('UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStatus, user.id);
+
+    // H-013: Invalidate all refresh tokens when user is banned
+    if (newStatus === 'banned') {
+      await db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(user.id);
+    }
+
     await logAudit({
       userId: req.user!.userId,
       action: newStatus === 'banned' ? 'ban_user' : 'unban_user',
@@ -681,7 +786,7 @@ adminRouter.put(
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
     const { reason } = req.body;
-    const user = await db.prepare<any>('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const user = await db.prepare<UserRow>('SELECT * FROM users WHERE id = ?').get(req.params.id);
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -690,6 +795,12 @@ adminRouter.put(
 
     const newStatus = user.status === 'suspended' ? 'active' : 'suspended';
     await db.prepare('UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStatus, user.id);
+
+    // H-013: Invalidate all refresh tokens when user is suspended
+    if (newStatus === 'suspended') {
+      await db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(user.id);
+    }
+
     await logAudit({
       userId: req.user!.userId,
       action: newStatus === 'suspended' ? 'suspend_user' : 'unsuspend_user',
@@ -723,7 +834,7 @@ adminRouter.put(
     const { value } = req.body;
     const key = req.params.key;
 
-    const existing = await db.prepare<any>('SELECT * FROM policy_config WHERE key = ?').get(key);
+    const existing = await db.prepare<PolicyConfigRow>('SELECT * FROM policy_config WHERE key = ?').get(key);
     if (!existing) {
       res.status(404).json({ error: 'Policy not found' });
       return;
@@ -840,7 +951,7 @@ adminRouter.get(
     const previousWindowMs = new Date(rangeEnd).getTime() - new Date(rangeStart).getTime();
     const prevStart = new Date(new Date(rangeStart).getTime() - previousWindowMs).toISOString();
 
-    const shiftCounts = await db.prepare<any>(`
+    const shiftCounts = await db.prepare<ShiftAnalyticsRow>(`
       SELECT
         COUNT(*)::int AS total,
         COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0)::int AS open,
@@ -850,7 +961,7 @@ adminRouter.get(
       WHERE created_at >= ? AND created_at <= ?
     `).get(rangeStart, rangeEnd);
 
-    const bookingCounts = await db.prepare<any>(`
+    const bookingCounts = await db.prepare<BookingAnalyticsRow>(`
       SELECT
         COUNT(*)::int AS total,
         COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0)::int AS completed,
@@ -860,7 +971,7 @@ adminRouter.get(
       WHERE created_at >= ? AND created_at <= ?
     `).get(rangeStart, rangeEnd);
 
-    const disputeCounts = await db.prepare<any>(`
+    const disputeCounts = await db.prepare<DisputeAnalyticsRow>(`
       SELECT
         COUNT(*)::int AS total,
         COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0)::int AS open,
@@ -869,7 +980,7 @@ adminRouter.get(
       WHERE created_at >= ? AND created_at <= ?
     `).get(rangeStart, rangeEnd);
 
-    const userCounts = await db.prepare<any>(`
+    const userCounts = await db.prepare<UserAnalyticsRow>(`
       SELECT
         COUNT(*)::int AS total,
         COALESCE(SUM(CASE WHEN role = 'doctor' THEN 1 ELSE 0 END), 0)::int AS doctors,
@@ -878,7 +989,7 @@ adminRouter.get(
       FROM users
     `).get(rangeStart, rangeEnd);
 
-    const financials = await db.prepare<any>(`
+    const financials = await db.prepare<FinancialAnalyticsRow>(`
       SELECT
         COALESCE(SUM(CASE WHEN type = 'platform_fee' THEN amount_pkr ELSE 0 END), 0)::int AS total_platform_fees,
         COALESCE(SUM(CASE WHEN type = 'payout' THEN amount_pkr ELSE 0 END), 0)::int AS total_payouts
@@ -1006,6 +1117,36 @@ adminRouter.get(
 );
 
 // ============================================================
+// INTEGRATIONS (masked keys for Settings UI)
+// ============================================================
+
+adminRouter.get(
+  '/integrations',
+  asyncHandler(async (_req: AuthRequest, res: Response): Promise<void> => {
+    // Return masked versions of integration keys from env vars.
+    // NEVER return full keys to the frontend.
+    const stripeKey = process.env.STRIPE_SECRET_KEY || '';
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID || '';
+
+    function maskKey(key: string): string {
+      if (!key || key.length < 8) return 'Not configured';
+      return key.slice(0, 7) + '••••••••' + key.slice(-4);
+    }
+
+    res.json({
+      stripe: {
+        connected: !!stripeKey,
+        maskedKey: maskKey(stripeKey),
+      },
+      twilio: {
+        connected: !!twilioSid,
+        maskedKey: maskKey(twilioSid),
+      },
+    });
+  }),
+);
+
+// ============================================================
 // SETTLEMENTS / PAYOUTS MANAGEMENT
 // ============================================================
 
@@ -1082,7 +1223,7 @@ adminRouter.put(
       `).run(status, paymentReference || null, req.params.id);
 
       if (status === 'failed') {
-        const payout = await db.prepare<any>('SELECT * FROM payouts WHERE id = ?').get(req.params.id);
+        const payout = await db.prepare<PayoutRow>('SELECT * FROM payouts WHERE id = ?').get(req.params.id);
         if (payout) {
           await db.prepare(`
             UPDATE wallets

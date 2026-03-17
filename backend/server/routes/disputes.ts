@@ -9,15 +9,26 @@ import { getDb } from '../database/schema.js';
 import { authMiddleware, type AuthRequest, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../utils/audit.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { BookingRow, DisputeRow, WalletRow, PolicyValueRow } from '../types.js';
 
-type PolicyRow = { value: string };
+type DisputeDetailRow = DisputeRow & {
+  shift_title: string;
+  start_time: string;
+  end_time: string;
+  total_price_pkr: number;
+  booking_status: string;
+  check_in_time: string | null;
+  check_out_time: string | null;
+  raised_by_phone: string;
+  raised_against_phone: string;
+};
 
 export const disputesRouter = Router();
 disputesRouter.use(authMiddleware);
 
 async function getNumericPolicy(key: string, fallback: number): Promise<number> {
   const db = getDb();
-  const policy = await db.prepare<PolicyRow>('SELECT value FROM policy_config WHERE key = ?').get(key);
+  const policy = await db.prepare<PolicyValueRow>('SELECT value FROM policy_config WHERE key = ?').get(key);
   const parsed = Number.parseInt(policy?.value ?? '', 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -42,7 +53,7 @@ disputesRouter.post(
       return;
     }
 
-    const booking = await db.prepare<any>('SELECT * FROM bookings WHERE id = ?').get(bookingId);
+    const booking = await db.prepare<BookingRow>('SELECT * FROM bookings WHERE id = ?').get(bookingId);
     if (!booking) {
       res.status(404).json({ error: 'Booking not found' });
       return;
@@ -58,6 +69,16 @@ disputesRouter.post(
     }
 
     const raisedAgainst = req.user!.userId === booking.doctor_id ? booking.poster_id : booking.doctor_id;
+
+    // M-031: Prevent duplicate active disputes for the same booking
+    const existingDispute = await db.prepare<{ id: string }>(
+      "SELECT id FROM disputes WHERE booking_id = ? AND status IN ('open', 'under_review')"
+    ).get(bookingId);
+    if (existingDispute) {
+      res.status(409).json({ error: 'An active dispute already exists for this booking', disputeId: existingDispute.id });
+      return;
+    }
+
     const disputeId = uuidv4();
 
     await db.transaction(async () => {
@@ -85,7 +106,7 @@ disputesRouter.post(
         uuidv4(),
         raisedAgainst,
         `A ${type} dispute has been raised for booking`,
-        { disputeId, bookingId },
+        JSON.stringify({ disputeId, bookingId }),
       );
 
       await logAudit({
@@ -167,7 +188,7 @@ disputesRouter.get(
   '/:id',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const dispute = await db.prepare<any>(`
+    const dispute = await db.prepare<DisputeDetailRow>(`
       SELECT d.*,
         s.title AS shift_title, s.start_time, s.end_time, s.total_price_pkr,
         b.status AS booking_status, b.check_in_time, b.check_out_time,
@@ -195,14 +216,14 @@ disputesRouter.get(
       return;
     }
 
-    dispute.evidence = await db.prepare(
+    const evidence = await db.prepare(
       'SELECT * FROM dispute_evidence WHERE dispute_id = ? ORDER BY created_at ASC',
     ).all(dispute.id);
-    dispute.attendanceEvents = await db.prepare(
+    const attendanceEvents = await db.prepare(
       'SELECT * FROM attendance_events WHERE booking_id = ? ORDER BY recorded_at ASC',
     ).all(dispute.booking_id);
 
-    res.json(dispute);
+    res.json({ ...dispute, evidence, attendanceEvents });
   }),
 );
 
@@ -221,7 +242,7 @@ disputesRouter.post(
       return;
     }
 
-    const dispute = await db.prepare<any>('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
+    const dispute = await db.prepare<DisputeRow>('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
     if (!dispute) {
       res.status(404).json({ error: 'Dispute not found' });
       return;
@@ -255,7 +276,7 @@ disputesRouter.put(
   requireRole('platform_admin'),
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const dispute = await db.prepare<any>('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
+    const dispute = await db.prepare<DisputeRow>('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
 
     if (!dispute) {
       res.status(404).json({ error: 'Dispute not found' });
@@ -295,7 +316,7 @@ disputesRouter.put(
       return;
     }
 
-    const dispute = await db.prepare<any>('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
+    const dispute = await db.prepare<DisputeRow>('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
     if (!dispute) {
       res.status(404).json({ error: 'Dispute not found' });
       return;
@@ -317,7 +338,7 @@ disputesRouter.put(
 
       await db.prepare("UPDATE bookings SET status = 'resolved', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(dispute.booking_id);
 
-      const booking = await db.prepare<any>('SELECT * FROM bookings WHERE id = ?').get(dispute.booking_id);
+      const booking = await db.prepare<BookingRow>('SELECT * FROM bookings WHERE id = ?').get(dispute.booking_id);
       if (booking) {
         await processDisputeResolution(booking, resolutionType);
       }
@@ -326,7 +347,7 @@ disputesRouter.put(
         await db.prepare(`
           INSERT INTO notifications (id, user_id, type, title, body, data)
           VALUES (?, ?, 'dispute_resolved', 'Dispute Resolved', ?, ?)
-        `).run(uuidv4(), userId, `Dispute resolved: ${resolutionType}`, { disputeId: dispute.id });
+        `).run(uuidv4(), userId, `Dispute resolved: ${resolutionType}`, JSON.stringify({ disputeId: dispute.id }));
       }
 
       await logAudit({
@@ -342,10 +363,10 @@ disputesRouter.put(
   }),
 );
 
-async function processDisputeResolution(booking: any, resolutionType: string): Promise<void> {
+async function processDisputeResolution(booking: BookingRow, resolutionType: string): Promise<void> {
   const db = getDb();
-  const doctorWallet = await db.prepare<any>('SELECT * FROM wallets WHERE user_id = ?').get(booking.doctor_id);
-  const posterWallet = await db.prepare<any>('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id);
+  const doctorWallet = await db.prepare<WalletRow>('SELECT * FROM wallets WHERE user_id = ?').get(booking.doctor_id);
+  const posterWallet = await db.prepare<WalletRow>('SELECT * FROM wallets WHERE user_id = ?').get(booking.poster_id);
   const alreadySettled = Boolean(booking.settled_at);
 
   switch (resolutionType) {

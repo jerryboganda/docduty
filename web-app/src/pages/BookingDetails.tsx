@@ -7,13 +7,23 @@ import {
   Phone, Mail, XCircle, CheckCircle, RefreshCw
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
+import type { ApiAttendanceEvent, ApiBooking } from '../types/api';
+
+function getEventType(event: ApiAttendanceEvent): string {
+  return event?.event_type || '';
+}
+
+function getEventTimestamp(event: ApiAttendanceEvent): string | null {
+  return event?.recorded_at || null;
+}
 
 interface BookingData {
   id: string;
   status: string;
   doctor: { name: string; specialty: string; reliability: string; rating: string; skills: string[]; phone: string; email: string; };
   shift: { id: string; role: string; date: string; time: string; location: string; pay: string; };
-  attendanceEvents: any[];
+  attendanceEvents: ApiAttendanceEvent[];
 }
 
 const STATUS_DISPLAY: Record<string, string> = {
@@ -34,7 +44,7 @@ export default function BookingDetails() {
   const fetchBooking = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.get(`/bookings/${id}`);
+      const data = await api.get<ApiBooking>(`/bookings/${id}`);
       const start = data.start_time ? new Date(data.start_time) : null;
       const end = data.end_time ? new Date(data.end_time) : null;
       const dateStr = start ? start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
@@ -62,8 +72,8 @@ export default function BookingDetails() {
         },
         attendanceEvents: data.attendanceEvents || [],
       });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load booking');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -77,8 +87,8 @@ export default function BookingDetails() {
       setCancelModalOpen(false);
       toast.success('Booking cancelled');
       navigate('/facility/bookings');
-    } catch (err: any) {
-      toast.error('Cancel Failed', err.message || 'Failed to cancel booking');
+    } catch (err: unknown) {
+      toast.error('Cancel Failed', getErrorMessage(err));
     }
   };
 
@@ -106,11 +116,26 @@ export default function BookingDetails() {
     );
   }
 
+  const checkInEvent = booking.attendanceEvents.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_in');
+  const checkOutEvent = booking.attendanceEvents.find((e: ApiAttendanceEvent) => getEventType(e) === 'check_out');
+
   const timeline = [
     { step: 'Confirmed', time: booking.attendanceEvents.length > 0 ? 'Completed' : 'Completed', status: 'completed' as const },
-    { step: 'Check-in', time: booking.attendanceEvents.find((e: any) => e.event_type === 'check_in')?.recorded_at ? new Date(booking.attendanceEvents.find((e: any) => e.event_type === 'check_in').recorded_at).toLocaleString() : '--', status: booking.attendanceEvents.find((e: any) => e.event_type === 'check_in') ? 'completed' as const : 'pending' as const },
+    {
+      step: 'Check-in',
+      time: checkInEvent && getEventTimestamp(checkInEvent)
+        ? new Date(getEventTimestamp(checkInEvent) as string).toLocaleString()
+        : '--',
+      status: checkInEvent ? 'completed' as const : 'pending' as const,
+    },
     { step: 'In progress', time: booking.status === 'In Progress' ? 'Active' : '--', status: booking.status === 'In Progress' || booking.status === 'Completed' ? 'completed' as const : 'pending' as const },
-    { step: 'Check-out', time: booking.attendanceEvents.find((e: any) => e.event_type === 'check_out')?.recorded_at ? new Date(booking.attendanceEvents.find((e: any) => e.event_type === 'check_out').recorded_at).toLocaleString() : '--', status: booking.attendanceEvents.find((e: any) => e.event_type === 'check_out') ? 'completed' as const : 'pending' as const },
+    {
+      step: 'Check-out',
+      time: checkOutEvent && getEventTimestamp(checkOutEvent)
+        ? new Date(getEventTimestamp(checkOutEvent) as string).toLocaleString()
+        : '--',
+      status: checkOutEvent ? 'completed' as const : 'pending' as const,
+    },
     { step: 'Completed', time: booking.status === 'Completed' ? 'Done' : '--', status: booking.status === 'Completed' ? 'completed' as const : 'pending' as const },
   ];
 
@@ -205,7 +230,7 @@ export default function BookingDetails() {
             <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6">Booking Timeline</h3>
             <div className="relative border-l-2 border-slate-200 ml-3 space-y-6">
               {timeline.map((item, idx) => (
-                <div key={idx} className="relative pl-6">
+                <div key={`${item.step}-${item.time}`} className="relative pl-6">
                   <div className={`absolute -left-[9px] top-0.5 w-4 h-4 rounded-full border-2 bg-white ${
                     item.status === 'completed' ? 'border-emerald-500' : 'border-slate-300'
                   }`}>
@@ -274,7 +299,7 @@ export default function BookingDetails() {
                     onChange={(e) => setCancelReason(e.target.value)}
                     className="w-full p-2.5 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-primary outline-none"
                   >
-                    <option>Select a reason...</option>
+                    <option value="">Select a reason...</option>
                     <option>Shift no longer needed</option>
                     <option>Found internal coverage</option>
                     <option>Doctor requested cancellation</option>
@@ -297,7 +322,8 @@ export default function BookingDetails() {
                 </button>
                 <button 
                   onClick={handleCancel}
-                  className="flex-1 py-2.5 bg-red-600 text-white font-medium rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20"
+                  disabled={!cancelReason}
+                  className="flex-1 py-2.5 bg-red-600 text-white font-medium rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Confirm Cancel
                 </button>

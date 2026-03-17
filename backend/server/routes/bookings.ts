@@ -13,6 +13,33 @@ import { logAudit } from '../utils/audit.js';
 import { requireApprovedDoctorVerification } from '../utils/doctorVerification.js';
 import { processCancellationRefund } from '../utils/settlement.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { logger } from '../utils/logger.js';
+import type { ShiftRow, WalletRow, OfferRow, BookingRow, PolicyValueRow, AttendanceEventRow } from '../types.js';
+
+/** Booking row joined with shift, doctor profile, specialty, and facility location fields. */
+interface BookingDetailRow extends BookingRow {
+  shift_title: string;
+  shift_type: string;
+  start_time: string;
+  end_time: string;
+  department: string | null;
+  urgency: string;
+  shift_description: string | null;
+  requirements: string | null;
+  facility_location_id: string | null;
+  doctor_name: string | null;
+  reliability_score: number | null;
+  doctor_rating: number | null;
+  pmdc_license: string | null;
+  experience_years: number | null;
+  specialty_name: string | null;
+  location_name: string | null;
+  location_address: string | null;
+  location_lat: number | null;
+  location_lng: number | null;
+  geofence_radius_m: number | null;
+  attendanceEvents?: AttendanceEventRow[];
+}
 
 export const bookingsRouter = Router();
 bookingsRouter.use(authMiddleware);
@@ -30,7 +57,7 @@ bookingsRouter.post('/accept', requireRole('doctor'), asyncHandler(async (req: A
     }
 
     const result = await db.transaction(async () => {
-      const shift = await db.prepare('SELECT * FROM shifts WHERE id = ? FOR UPDATE').get(resolvedShiftId) as any;
+      const shift = await db.prepare('SELECT * FROM shifts WHERE id = ? FOR UPDATE').get(resolvedShiftId) as ShiftRow | undefined;
       if (!shift) throw new Error('Shift not found');
       if (shift.status !== 'open') throw new Error('Shift is no longer available');
       if (shift.poster_id === req.user!.userId) throw new Error('Cannot accept your own shift');
@@ -48,7 +75,7 @@ bookingsRouter.post('/accept', requireRole('doctor'), asyncHandler(async (req: A
           .run(offerId, req.user!.userId);
       }
 
-      const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ? FOR UPDATE').get(shift.poster_id) as any;
+      const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ? FOR UPDATE').get(shift.poster_id) as WalletRow | undefined;
       if (!posterWallet || posterWallet.balance_pkr < shift.total_price_pkr) {
         throw new Error('Insufficient balance for escrow hold');
       }
@@ -91,7 +118,7 @@ bookingsRouter.post('/accept', requireRole('doctor'), asyncHandler(async (req: A
         uuidv4(),
         shift.poster_id,
         `Your shift "${shift.title}" has been accepted`,
-        { bookingId, shiftId: resolvedShiftId },
+        JSON.stringify({ bookingId, shiftId: resolvedShiftId }),
       );
 
       return { bookingId };
@@ -105,10 +132,11 @@ bookingsRouter.post('/accept', requireRole('doctor'), asyncHandler(async (req: A
       status: 'confirmed',
       message: 'Shift accepted successfully',
     });
-  } catch (err: any) {
-    console.error('[Bookings Accept]', err.message);
-    const statusCode = err.statusCode || (err.message.includes('not found') || err.message.includes('no longer') ? 409 : 500);
-    res.status(statusCode).json({ error: err.message });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Booking accept failed', { error: message });
+    const statusCode = (err instanceof Error && 'statusCode' in err ? (err as { statusCode: number }).statusCode : undefined) || (message.includes('not found') || message.includes('no longer') ? 409 : 500);
+    res.status(statusCode).json({ error: message });
   }
 }));
 
@@ -125,7 +153,7 @@ bookingsRouter.post('/counter', requireRole('doctor'), asyncHandler(async (req: 
       return;
     }
 
-    const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(resolvedShiftId) as any;
+    const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(resolvedShiftId) as ShiftRow | undefined;
     if (!shift) { res.status(404).json({ error: 'Shift not found' }); return; }
     if (shift.status !== 'open') { res.status(400).json({ error: 'Shift not available' }); return; }
     if (!shift.counter_offer_allowed) { res.status(400).json({ error: 'Counter offers not allowed for this shift' }); return; }
@@ -143,13 +171,15 @@ bookingsRouter.post('/counter', requireRole('doctor'), asyncHandler(async (req: 
       uuidv4(),
       shift.poster_id,
       `A doctor has sent a counter offer of PKR ${amount}`,
-      { shiftId: resolvedShiftId, offerId },
+        JSON.stringify({ shiftId: resolvedShiftId, offerId }),
     );
 
     res.status(201).json({ offerId, message: 'Counter offer submitted' });
-  } catch (err: any) {
-    console.error('[Bookings Counter]', err.message);
-    res.status(err.statusCode || 500).json({ error: err.message || 'Failed to submit counter offer' });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Counter offer failed', { error: message });
+    const statusCode = (err instanceof Error && 'statusCode' in err ? (err as { statusCode: number }).statusCode : undefined) || 500;
+    res.status(statusCode).json({ error: message || 'Failed to submit counter offer' });
   }
 }));
 
@@ -163,11 +193,11 @@ bookingsRouter.put('/offers/:offerId/respond', requireRole('facility_admin', 'do
       return;
     }
 
-    const offer = await db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.offerId) as any;
+    const offer = await db.prepare('SELECT * FROM offers WHERE id = ?').get(req.params.offerId) as OfferRow | undefined;
     if (!offer) { res.status(404).json({ error: 'Offer not found' }); return; }
     if (offer.status !== 'pending') { res.status(400).json({ error: 'Offer is no longer pending' }); return; }
 
-    const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(offer.shift_id) as any;
+    const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(offer.shift_id) as ShiftRow | undefined;
     if (!shift) { res.status(404).json({ error: 'Shift not found' }); return; }
     if (shift.poster_id !== req.user!.userId && req.user!.role !== 'platform_admin') {
       res.status(403).json({ error: 'Only the shift poster can respond to counter offers' });
@@ -179,30 +209,31 @@ bookingsRouter.put('/offers/:offerId/respond', requireRole('facility_admin', 'do
         .run(offer.id);
 
       await db.prepare(`INSERT INTO notifications (id, user_id, type, title, body, data) VALUES (?, ?, 'counter_rejected', 'Counter Offer Rejected', ?, ?)`)
-        .run(uuidv4(), offer.doctor_id, 'Your counter offer was not accepted', { shiftId: shift.id, offerId: offer.id });
+        .run(uuidv4(), offer.doctor_id, 'Your counter offer was not accepted', JSON.stringify({ shiftId: shift.id, offerId: offer.id }));
 
       res.json({ message: 'Counter offer rejected' });
       return;
     }
 
     const result = await db.transaction(async () => {
-      const lockedShift = await db.prepare('SELECT * FROM shifts WHERE id = ? FOR UPDATE').get(shift.id) as any;
+      const lockedShift = await db.prepare('SELECT * FROM shifts WHERE id = ? FOR UPDATE').get(shift.id) as ShiftRow | undefined;
       if (!lockedShift || lockedShift.status !== 'open') throw new Error('Shift is no longer available');
 
       const counterPrice = offer.counter_amount_pkr;
+      if (counterPrice == null) throw new Error('Counter offer has no amount');
       const commissionPct = parseInt(
-        (await db.prepare("SELECT value FROM policy_config WHERE key = 'platform_commission_pct'").get() as any)?.value || '10',
+        (await db.prepare("SELECT value FROM policy_config WHERE key = 'platform_commission_pct'").get() as PolicyValueRow | undefined)?.value || '10',
         10,
       );
       const minFee = parseInt(
-        (await db.prepare("SELECT value FROM policy_config WHERE key = 'min_platform_fee_pkr'").get() as any)?.value || '200',
+        (await db.prepare("SELECT value FROM policy_config WHERE key = 'min_platform_fee_pkr'").get() as PolicyValueRow | undefined)?.value || '200',
         10,
       );
       const calculatedFee = Math.round(counterPrice * commissionPct / 100);
       const platformFeePkr = Math.max(calculatedFee, minFee);
       const payoutPkr = counterPrice - platformFeePkr;
 
-      const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ? FOR UPDATE').get(lockedShift.poster_id) as any;
+      const posterWallet = await db.prepare('SELECT * FROM wallets WHERE user_id = ? FOR UPDATE').get(lockedShift.poster_id) as WalletRow | undefined;
       if (!posterWallet || posterWallet.balance_pkr < counterPrice) {
         throw new Error('Insufficient balance for escrow hold');
       }
@@ -230,16 +261,17 @@ bookingsRouter.put('/offers/:offerId/respond', requireRole('facility_admin', 'do
         .run(uuidv4(), posterWallet.id, bookingId, counterPrice);
 
       await db.prepare(`INSERT INTO notifications (id, user_id, type, title, body, data) VALUES (?, ?, 'counter_accepted', 'Counter Offer Accepted!', ?, ?)`)
-        .run(uuidv4(), offer.doctor_id, `Your counter offer of PKR ${counterPrice} was accepted`, { bookingId, shiftId: lockedShift.id });
+        .run(uuidv4(), offer.doctor_id, `Your counter offer of PKR ${counterPrice} was accepted`, JSON.stringify({ bookingId, shiftId: lockedShift.id }));
 
       return { bookingId };
     })();
 
     await logAudit({ userId: req.user!.userId, action: 'accept_counter_offer', entityType: 'booking', entityId: result.bookingId });
     res.json({ bookingId: result.bookingId, message: 'Counter offer accepted, booking confirmed' });
-  } catch (err: any) {
-    console.error('[Counter Respond]', err.message);
-    res.status(err.message.includes('no longer') ? 409 : 500).json({ error: err.message });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Counter respond failed', { error: message });
+    res.status(message.includes('no longer') ? 409 : 500).json({ error: message });
   }
 }));
 
@@ -247,7 +279,7 @@ bookingsRouter.get('/offers', asyncHandler(async (req: AuthRequest, res: Respons
   try {
     const db = getDb();
     let where = "WHERE o.type = 'counter' AND o.status = 'pending'";
-    const params: any[] = [];
+    const params: unknown[] = [];
 
     if (req.user!.role === 'facility_admin' || req.user!.role === 'doctor') {
       where += ' AND s.poster_id = ?';
@@ -265,8 +297,9 @@ bookingsRouter.get('/offers', asyncHandler(async (req: AuthRequest, res: Respons
     `).all(...params);
 
     res.json({ offers });
-  } catch (err: any) {
-    console.error('[Offers List]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Offers list failed', { error: message });
     res.status(500).json({ error: 'Failed to list offers' });
   }
 }));
@@ -277,7 +310,7 @@ bookingsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response) => 
     const { status, page = '1', limit = '20' } = req.query;
 
     let where = 'WHERE 1=1';
-    const params: any[] = [];
+    const params: unknown[] = [];
 
     if (req.user!.role === 'doctor') {
       where += ' AND b.doctor_id = ?';
@@ -320,12 +353,12 @@ bookingsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response) => 
       `).all(...params, parsedLimit, offset);
 
     if (isPgMemUrl(env.databaseUrl)) {
-      for (const booking of bookings as any[]) {
+      for (const booking of bookings as BookingRow[]) {
         const shift = await db.prepare(`
           SELECT title as shift_title, type as shift_type, start_time, end_time, department, urgency
           FROM shifts
           WHERE id = ?
-        `).get(booking.shift_id) as any;
+        `).get(booking.shift_id) as { shift_title: string; shift_type: string; start_time: string; end_time: string; department: string | null; urgency: string } | undefined;
 
         if (shift) {
           Object.assign(booking, shift);
@@ -334,8 +367,9 @@ bookingsRouter.get('/', asyncHandler(async (req: AuthRequest, res: Response) => 
     }
 
     res.json({ bookings, total, page: parsedPage, limit: parsedLimit });
-  } catch (err: any) {
-    console.error('[Bookings List]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Bookings list failed', { error: message });
     res.status(500).json({ error: 'Failed to list bookings' });
   }
 }));
@@ -359,7 +393,7 @@ bookingsRouter.get('/:id', asyncHandler(async (req: AuthRequest, res: Response) 
       LEFT JOIN specialties sp ON s.specialty_id = sp.id
       LEFT JOIN facility_locations fl ON s.facility_location_id = fl.id
       WHERE b.id = ?
-    `).get(req.params.id) as any;
+    `).get(req.params.id) as BookingDetailRow | undefined;
 
     if (!booking) {
       res.status(404).json({ error: 'Booking not found' });
@@ -377,11 +411,12 @@ bookingsRouter.get('/:id', asyncHandler(async (req: AuthRequest, res: Response) 
 
     booking.attendanceEvents = await db.prepare(`
       SELECT * FROM attendance_events WHERE booking_id = ? ORDER BY recorded_at ASC
-    `).all(booking.id);
+    `).all(booking.id) as AttendanceEventRow[];
 
     res.json(booking);
-  } catch (err: any) {
-    console.error('[Bookings Get]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Booking get failed', { error: message });
     res.status(500).json({ error: 'Failed to get booking' });
   }
 }));
@@ -389,7 +424,7 @@ bookingsRouter.get('/:id', asyncHandler(async (req: AuthRequest, res: Response) 
 bookingsRouter.put('/:id/cancel', asyncHandler(async (req: AuthRequest, res: Response) => {
   try {
     const db = getDb();
-    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id) as any;
+    const booking = await db.prepare('SELECT * FROM bookings WHERE id = ?').get(req.params.id) as BookingRow | undefined;
 
     if (!booking) { res.status(404).json({ error: 'Booking not found' }); return; }
     if (!['confirmed', 'pending_payment'].includes(booking.status)) {
@@ -407,14 +442,14 @@ bookingsRouter.put('/:id/cancel', asyncHandler(async (req: AuthRequest, res: Res
 
       await db.prepare("UPDATE shifts SET status = 'open', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(booking.shift_id);
 
-      const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(booking.shift_id) as any;
+      const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(booking.shift_id) as ShiftRow | undefined;
       if (shift) {
         await processCancellationRefund(booking, shift);
       }
 
       if (req.user!.userId === booking.doctor_id) {
         const cancelPenalty = parseInt(
-          (await db.prepare("SELECT value FROM policy_config WHERE key = 'cancel_reliability_penalty'").get() as any)?.value || '10',
+          (await db.prepare("SELECT value FROM policy_config WHERE key = 'cancel_reliability_penalty'").get() as PolicyValueRow | undefined)?.value || '10',
           10,
         );
         await db.prepare(`UPDATE doctor_profiles SET reliability_score = GREATEST(0, reliability_score - ?), updated_at = CURRENT_TIMESTAMP WHERE user_id = ?`)
@@ -424,13 +459,14 @@ bookingsRouter.put('/:id/cancel', asyncHandler(async (req: AuthRequest, res: Res
       const otherPartyId = req.user!.userId === booking.doctor_id ? booking.poster_id : booking.doctor_id;
       const cancellerRole = req.user!.userId === booking.doctor_id ? 'doctor' : 'facility';
       await db.prepare(`INSERT INTO notifications (id, user_id, type, title, body, data) VALUES (?, ?, 'booking_cancelled', 'Booking Cancelled', ?, ?)`)
-        .run(uuidv4(), otherPartyId, `The ${cancellerRole} has cancelled the booking`, { bookingId: booking.id });
+        .run(uuidv4(), otherPartyId, `The ${cancellerRole} has cancelled the booking`, JSON.stringify({ bookingId: booking.id }));
     })();
 
     await logAudit({ userId: req.user!.userId, action: 'cancel_booking', entityType: 'booking', entityId: booking.id });
     res.json({ message: 'Booking cancelled' });
-  } catch (err: any) {
-    console.error('[Bookings Cancel]', err.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error('Booking cancel failed', { error: message });
     res.status(500).json({ error: 'Failed to cancel booking' });
   }
 }));

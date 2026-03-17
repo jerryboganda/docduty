@@ -16,6 +16,10 @@ export async function logAudit(params: {
   ipAddress?: string;
 }): Promise<void> {
   const db = getDb();
+  const serialize = (v: unknown): string | null => {
+    if (v == null) return null;
+    return typeof v === 'string' ? v : JSON.stringify(v);
+  };
   await db.prepare(`
     INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, old_value, new_value, ip_address)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -25,8 +29,8 @@ export async function logAudit(params: {
     params.action,
     params.entityType,
     params.entityId || null,
-    params.oldValue || null,
-    params.newValue || null,
+    serialize(params.oldValue),
+    serialize(params.newValue),
     params.ipAddress || null,
   );
 }

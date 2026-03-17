@@ -7,12 +7,14 @@ import {
   RefreshCw, Plus, ChevronRight, Edit, Trash2, Eye
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { getErrorMessage } from '../lib/support';
 import { SHIFT_STATUS_TAB, getShiftTabColor } from '../lib/statusMaps';
+import type { ShiftsResponse, ApiShift } from '../types/api';
 
-type TabType = 'Drafts' | 'Open' | 'In Dispatch' | 'Filled' | 'Completed' | 'Cancelled';
+type TabType = 'Drafts' | 'Open' | 'In Dispatch' | 'Filled' | 'In Progress' | 'Completed' | 'Expired' | 'Cancelled';
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
-const TABS: TabType[] = ['Open', 'In Dispatch', 'Filled', 'Drafts', 'Completed', 'Cancelled'];
+const TABS: TabType[] = ['Open', 'In Dispatch', 'Filled', 'In Progress', 'Drafts', 'Completed', 'Expired', 'Cancelled'];
 
 interface ShiftItem {
   id: string;
@@ -25,6 +27,7 @@ interface ShiftItem {
   status: string;
   applicants: number;
   doctor?: string;
+  urgency?: string;
 }
 
 export default function Shifts() {
@@ -43,9 +46,9 @@ export default function Shifts() {
   const loadShifts = useCallback(async () => {
     setViewState('loading');
     try {
-      const data = await api.get<any>('/shifts');
-      const rawShifts = data?.shifts || data || [];
-      const mapped: ShiftItem[] = (Array.isArray(rawShifts) ? rawShifts : []).map((s: any) => {
+      const data = await api.get<ShiftsResponse>('/shifts');
+      const rawShifts = data?.shifts || [];
+      const mapped: ShiftItem[] = rawShifts.map((s: ApiShift) => {
         const start = s.start_time ? new Date(s.start_time) : null;
         const end = s.end_time ? new Date(s.end_time) : null;
         const statusMap = SHIFT_STATUS_TAB;
@@ -60,6 +63,7 @@ export default function Shifts() {
           status: statusMap[s.status] || s.status || 'Open',
           applicants: s.offers_count || 0,
           doctor: s.doctor_name,
+          urgency: s.urgency || '',
         };
       });
       
@@ -74,6 +78,10 @@ export default function Shifts() {
 
   const filteredShifts = shifts.filter(s => {
     if (s.status !== activeTab) return false;
+    if (urgencyFilter) {
+      if (urgencyFilter === 'urgent' && s.urgency !== 'critical' && s.urgency !== 'urgent') return false;
+      if (urgencyFilter === 'standard' && (s.urgency === 'critical' || s.urgency === 'urgent')) return false;
+    }
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
       return s.title.toLowerCase().includes(q) || s.dept.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) || s.location.toLowerCase().includes(q);
@@ -94,9 +102,9 @@ export default function Shifts() {
       setShowToast(true);
       setTimeout(() => setShowToast(false), 3000);
       loadShifts();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setCancelModalOpen(false);
-      toast.error('Failed to cancel shift', err.message || 'Please try again');
+      toast.error('Failed to cancel shift', getErrorMessage(err));
     }
   };
 

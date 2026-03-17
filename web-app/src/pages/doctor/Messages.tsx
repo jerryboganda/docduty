@@ -5,7 +5,10 @@ import {
 import { api } from '../../lib/api';
 import { formatRelative, formatTime } from '../../lib/dateUtils';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { subscribeToChannel, unsubscribeFromChannel } from '../../lib/realtime';
+import { getErrorMessage } from '../../lib/support';
+import type { ConversationsResponse, MessagesResponse } from '../../types/api';
 
 interface Conversation {
   booking_id: string;
@@ -23,10 +26,13 @@ interface Conversation {
 interface Message {
   id: string;
   sender_id: string;
+  senderId?: string;
   sender_name: string;
   content: string;
   phi_detected: number;
   created_at: string;
+  createdAt?: string;
+  sent_at?: string;
 }
 
 export default function DoctorMessages() {
@@ -39,13 +45,14 @@ export default function DoctorMessages() {
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
+  const { user } = useAuth();
 
   const fetchConversations = useCallback(async () => {
     try {
-      const data = await api.get<any>('/messages/conversations');
+      const data = await api.get<ConversationsResponse>('/messages/conversations');
       setConversations(data.conversations || []);
-    } catch (err) {
-      console.error('[Messages] Failed to fetch conversations:', err);
+    } catch {
+      toast.error('Failed to load conversations');
     }
     setLoading(false);
   }, []);
@@ -58,7 +65,7 @@ export default function DoctorMessages() {
 
   const fetchMessages = useCallback(async (bookingId: string) => {
     try {
-      const data = await api.get<any>(`/messages/${bookingId}`);
+      const data = await api.get<MessagesResponse>(`/messages/${bookingId}`);
       setMessages(data.messages || []);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     } catch { toast.error('Failed to load messages'); }
@@ -71,7 +78,11 @@ export default function DoctorMessages() {
     const channel = subscribeToChannel(channelName);
     if (channel) {
       channel.bind('new-message', (data: Message) => {
-        setMessages(prev => [...prev, data]);
+        setMessages(prev => {
+          // Deduplicate: skip if message with same ID already exists
+          if (prev.some(m => m.id === data.id)) return prev;
+          return [...prev, data];
+        });
         setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
       });
     }
@@ -93,8 +104,8 @@ export default function DoctorMessages() {
       setNewMessage('');
       fetchMessages(activeBookingId);
       fetchConversations();
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to send');
+    } catch (err: unknown) {
+      toast.error(getErrorMessage(err));
     }
     setSending(false);
   };
@@ -108,6 +119,10 @@ export default function DoctorMessages() {
   );
 
   const activeConv = conversations.find(c => c.booking_id === activeBookingId);
+
+  const getMessageTimestamp = (message: Message): string => {
+    return message.created_at || message.createdAt || message.sent_at || '';
+  };
 
   return (
     <div className="space-y-3">
@@ -174,7 +189,7 @@ export default function DoctorMessages() {
           ) : (
             <>
               <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50/50 flex items-center gap-3">
-                <button onClick={() => setActiveBookingId(null)} className="md:hidden p-1 text-slate-500 hover:text-slate-700">
+                <button onClick={() => setActiveBookingId(null)} className="md:hidden p-1 text-slate-500 hover:text-slate-700" aria-label="Go back">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <Building2 className="w-7 h-7 text-slate-400 shrink-0" />
@@ -193,8 +208,8 @@ export default function DoctorMessages() {
                 {messages.length === 0 ? (
                   <p className="text-center text-xs text-slate-400 py-8">No messages yet</p>
                 ) : messages.map(m => {
-                  const otherParty = activeConv?.other_party_name || activeConv?.other_user_name || activeConv?.facility_name || activeConv?.doctor_name;
-                  const isMe = m.sender_name === 'You' || (otherParty ? m.sender_name !== otherParty : false);
+                  const senderId = m.sender_id || m.senderId;
+                  const isMe = !!user?.id && senderId === user.id;
                   return (
                     <div key={m.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
                       <div className={`max-w-[75%] px-3 py-2 rounded-2xl text-sm ${
@@ -212,7 +227,7 @@ export default function DoctorMessages() {
                         ) : (
                           <p className="whitespace-pre-wrap break-words">{m.content}</p>
                         )}
-                        <p className={`text-[10px] mt-1 ${isMe ? 'text-white/60' : 'text-slate-400'}`}>{formatTime(m.created_at)}</p>
+                        <p className={`text-[10px] mt-1 ${isMe ? 'text-white/60' : 'text-slate-400'}`}>{formatTime(getMessageTimestamp(m))}</p>
                       </div>
                     </div>
                   );
@@ -234,6 +249,7 @@ export default function DoctorMessages() {
                     onClick={sendMessage}
                     disabled={!newMessage.trim() || sending}
                     className="p-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-40 transition-colors shrink-0"
+                    aria-label="Send message"
                   >
                     <Send className="w-4 h-4" />
                   </button>

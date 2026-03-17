@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import UserAvatar from './UserAvatar';
 import { api } from '../lib/api';
 import { subscribeToChannel, unsubscribeFromChannel } from '../lib/realtime';
+import type { NotificationsResponse, ApiNotification } from '../types/api';
 
 const pageTitles: Record<string, string> = {
   '/facility': 'Dashboard',
@@ -23,15 +24,17 @@ export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const displayName = user?.profile?.name || user?.phone || 'User';
-  const currentTitle = pageTitles[location.pathname] || 'Dashboard';
+  const displayName = (user?.profile && 'name' in user.profile ? user.profile.name : undefined) || user?.phone || 'User';
+  const currentTitle = pageTitles[location.pathname] 
+    || Object.entries(pageTitles).find(([path]) => path !== '/facility' && location.pathname.startsWith(path))?.[1]
+    || 'Dashboard';
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     const fetchUnread = () => {
-      api.get<any>('/notifications').then(data => {
+      api.get<NotificationsResponse>('/notifications').then(data => {
         if (data?.notifications) {
-          setUnreadCount(data.notifications.filter((n: any) => !n.is_read).length);
+          setUnreadCount(data.notifications.filter((n: ApiNotification) => !n.is_read).length);
         }
       }).catch(() => {});
     };
@@ -61,6 +64,7 @@ export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
         <button 
           onClick={onMenuClick}
           className="p-2 -ml-2 text-slate-500 hover:text-slate-700 lg:hidden"
+          aria-label="Toggle menu"
         >
           <Menu className="w-6 h-6" />
         </button>
@@ -71,6 +75,7 @@ export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
         <button 
           onClick={() => navigate('/facility/notifications')}
           className="relative p-2 text-slate-400 hover:text-slate-500 transition-colors"
+          aria-label="View notifications"
         >
           {unreadCount > 0 && (
             <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full ring-2 ring-white px-1">

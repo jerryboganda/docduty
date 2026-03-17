@@ -2,13 +2,14 @@ import { env } from './config.js';
 import { initializeDatabase } from './database/schema.js';
 import { seedReferenceData } from './database/seed.js';
 import { startBackgroundJobs } from './utils/backgroundJobs.js';
+import { logger } from './utils/logger.js';
 
 async function bootstrapWorker(): Promise<void> {
   await initializeDatabase();
   await seedReferenceData();
 
   if (!env.startBackgroundJobs) {
-    console.log('[DocDuty Worker] START_BACKGROUND_JOBS is false; worker exiting without scheduling jobs');
+    logger.info('Worker exiting: START_BACKGROUND_JOBS is false');
     return;
   }
 
@@ -17,7 +18,7 @@ async function bootstrapWorker(): Promise<void> {
 
 if (!env.isTest) {
   void bootstrapWorker().catch((error: Error) => {
-    console.error('[DocDuty Worker Bootstrap]', error.message);
+    logger.error('Worker bootstrap failed', { error: error.message });
     process.exitCode = 1;
   });
 }

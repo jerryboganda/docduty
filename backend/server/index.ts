@@ -26,7 +26,9 @@ import { referenceRouter } from './routes/reference.js';
 import { contactRouter } from './routes/contact.js';
 import { uploadsRouter, handleMulterError } from './routes/uploads.js';
 import { doctorVerificationRouter } from './routes/doctorVerification.js';
+import { authMiddleware, requireRole } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { logger } from './utils/logger.js';
 
 const app = express();
 const requestMetrics = new Map<string, { count: number; totalMs: number }>();
@@ -38,6 +40,8 @@ let bootstrapPromise: Promise<void> | null = null;
 
 app.disable('x-powered-by');
 app.set('etag', false);
+// M-004: Trust proxy so rate-limiter sees real client IPs behind reverse proxy
+app.set('trust proxy', 1);
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -69,15 +73,13 @@ app.use((req, res, next) => {
     existing.count += 1;
     existing.totalMs += durationMs;
     requestMetrics.set(key, existing);
-    console.log(JSON.stringify({
-      level: 'info',
+    logger.info('HTTP request', {
       requestId,
       method: req.method,
       path: req.path,
       statusCode: res.statusCode,
       durationMs,
-      timestamp: new Date().toISOString(),
-    }));
+    });
   });
 
   next();
@@ -145,7 +147,7 @@ app.get('/api/readiness', async (_req, res) => {
   }
 });
 
-app.get('/api/metrics', (_req, res) => {
+app.get('/api/metrics', authMiddleware, requireRole('platform_admin'), (_req, res) => {
   const lines = [
     '# TYPE http_requests_total counter',
     '# TYPE http_request_duration_ms_avg gauge',
@@ -188,11 +190,11 @@ if (!env.isTest) {
   void bootstrap()
     .then(() => {
       app.listen(env.port, () => {
-        console.log(`[DocDuty API] Server running on http://localhost:${env.port}`);
+        logger.info('Server started', { port: env.port });
       });
     })
     .catch((error: Error) => {
-      console.error('[DocDuty API Bootstrap]', error.message);
+      logger.error('API bootstrap failed', { error: error.message });
       process.exitCode = 1;
     });
 }

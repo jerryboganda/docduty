@@ -21,7 +21,12 @@ class ShiftDetailController extends GetxController {
   final counterRateController = TextEditingController();
   final messageController = TextEditingController();
 
-  String get shiftId => Get.arguments['shiftId'] ?? '';
+  String get shiftId {
+    final args = Get.arguments;
+    if (args is Map) return args['shiftId']?.toString() ?? '';
+    if (args is String) return args;
+    return '';
+  }
 
   @override
   void onInit() {

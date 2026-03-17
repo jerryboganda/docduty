@@ -11,15 +11,43 @@ import { authMiddleware, type AuthRequest, requireRole } from '../middleware/aut
 import { logAudit } from '../utils/audit.js';
 import { processSettlement } from '../utils/settlement.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { BookingRow, PolicyValueRow } from '../types.js';
 
-type PolicyRow = { value: string };
+type BookingWithLocationRow = BookingRow & {
+  start_time: string;
+  end_time: string;
+  facility_location_id: string | null;
+  loc_lat: number | null;
+  loc_lng: number | null;
+  geofence_radius_m: number | null;
+  qr_secret: string | null;
+  qr_rotate_interval_min: number | null;
+};
+
+type BookingWithShiftRow = BookingRow & {
+  shift_id: string;
+};
+
+type BookingPresencePingRow = BookingRow & {
+  loc_lat: number | null;
+  loc_lng: number | null;
+  geofence_radius_m: number | null;
+};
 
 export const attendanceRouter = Router();
 attendanceRouter.use(authMiddleware);
 
+// M-027: Sanitize deviceInfo to prevent injection / oversized data
+function sanitizeDeviceInfo(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const str = JSON.stringify(raw);
+  if (str.length > 2000) return str.slice(0, 2000);
+  return str;
+}
+
 async function getNumericPolicy(key: string, fallback: number): Promise<number> {
   const db = getDb();
-  const policy = await db.prepare<PolicyRow>('SELECT value FROM policy_config WHERE key = ?').get(key);
+  const policy = await db.prepare<PolicyValueRow>('SELECT value FROM policy_config WHERE key = ?').get(key);
   const parsed = Number.parseInt(policy?.value ?? '', 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -72,7 +100,7 @@ attendanceRouter.post(
       return;
     }
 
-    const booking = await db.prepare<any>(`
+    const booking = await db.prepare<BookingWithLocationRow>(`
       SELECT b.*, s.start_time, s.end_time, s.facility_location_id,
         fl.latitude AS loc_lat, fl.longitude AS loc_lng,
         fl.geofence_radius_m, fl.qr_secret, fl.qr_rotate_interval_min
@@ -122,7 +150,7 @@ attendanceRouter.post(
     let qrValid = false;
     if (qrCode && booking.qr_secret) {
       qrValid = validateQrCode(
-        booking.facility_location_id,
+        booking.facility_location_id!,
         booking.qr_secret,
         qrCode,
         booking.qr_rotate_interval_min || 5,
@@ -130,6 +158,7 @@ attendanceRouter.post(
     }
 
     const mockLocationDetected = deviceInfo?.mockLocationEnabled === true;
+    const sanitizedDeviceInfo = sanitizeDeviceInfo(deviceInfo);
     const eventId = uuidv4();
     const latePenalty = isLate ? await getNumericPolicy('late_checkin_reliability_penalty', 5) : 0;
 
@@ -149,7 +178,7 @@ attendanceRouter.post(
         geoValid,
         qrCode || null,
         qrValid,
-        deviceInfo || null,
+        sanitizedDeviceInfo,
         mockLocationDetected,
       );
 
@@ -180,7 +209,7 @@ attendanceRouter.post(
         uuidv4(),
         booking.poster_id,
         'The locum doctor has checked in for the shift',
-        { bookingId },
+        JSON.stringify({ bookingId }),
       );
 
       await logAudit({
@@ -223,7 +252,7 @@ attendanceRouter.post(
       return;
     }
 
-    const booking = await db.prepare<any>(`
+    const booking = await db.prepare<BookingWithLocationRow>(`
       SELECT b.*, s.start_time, s.end_time, s.facility_location_id,
         fl.latitude AS loc_lat, fl.longitude AS loc_lng,
         fl.geofence_radius_m, fl.qr_secret, fl.qr_rotate_interval_min
@@ -261,7 +290,7 @@ attendanceRouter.post(
     let qrValid = false;
     if (qrCode && booking.qr_secret) {
       qrValid = validateQrCode(
-        booking.facility_location_id,
+        booking.facility_location_id!,
         booking.qr_secret,
         qrCode,
         booking.qr_rotate_interval_min || 5,
@@ -269,6 +298,7 @@ attendanceRouter.post(
     }
 
     const mockLocationDetected = deviceInfo?.mockLocationEnabled === true;
+    const sanitizedDeviceInfo = sanitizeDeviceInfo(deviceInfo);
     const completionBonus = await getNumericPolicy('completion_reliability_bonus', 1);
     const maxScore = await getNumericPolicy('max_reliability_score', 100);
     const eventId = uuidv4();
@@ -289,7 +319,7 @@ attendanceRouter.post(
         geoValid,
         qrCode || null,
         qrValid,
-        deviceInfo || null,
+        sanitizedDeviceInfo,
         mockLocationDetected,
       );
 
@@ -318,7 +348,7 @@ attendanceRouter.post(
       await db.prepare(`
         INSERT INTO notifications (id, user_id, type, title, body, data)
         VALUES (?, ?, 'check_out', 'Shift Completed', 'The locum doctor has checked out. Settlement is being processed.', ?)
-      `).run(uuidv4(), booking.poster_id, { bookingId });
+      `).run(uuidv4(), booking.poster_id, JSON.stringify({ bookingId }));
 
       await logAudit({
         userId: req.user!.userId,
@@ -345,7 +375,7 @@ attendanceRouter.get(
   '/:bookingId',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const booking = await db.prepare<any>('SELECT doctor_id, poster_id FROM bookings WHERE id = ?').get(req.params.bookingId);
+    const booking = await db.prepare<Pick<BookingRow, 'doctor_id' | 'poster_id'>>('SELECT doctor_id, poster_id FROM bookings WHERE id = ?').get(req.params.bookingId);
 
     if (!booking) {
       res.status(404).json({ error: 'Booking not found' });
@@ -393,7 +423,7 @@ attendanceRouter.post(
 
     await db.transaction(async () => {
       // C3 fix: Validate current booking status before admin override
-      const booking = await db.prepare<any>(
+      const booking = await db.prepare<BookingWithShiftRow>(
         'SELECT b.*, s.id AS shift_id FROM bookings b JOIN shifts s ON b.shift_id = s.id WHERE b.id = ? FOR UPDATE'
       ).get(bookingId);
 
@@ -473,7 +503,7 @@ attendanceRouter.post(
       return;
     }
 
-    const booking = await db.prepare<any>(`
+    const booking = await db.prepare<BookingPresencePingRow>(`
       SELECT b.*, fl.latitude AS loc_lat, fl.longitude AS loc_lng, fl.geofence_radius_m
       FROM bookings b
       JOIN shifts s ON b.shift_id = s.id
@@ -493,6 +523,7 @@ attendanceRouter.post(
     }
 
     const mockLocationDetected = deviceInfo?.mockLocationEnabled === true;
+    const sanitizedDeviceInfo = sanitizeDeviceInfo(deviceInfo);
     const eventId = uuidv4();
 
     await db.prepare(`
@@ -508,7 +539,7 @@ attendanceRouter.post(
       latitude ?? null,
       longitude ?? null,
       geoValid,
-      deviceInfo || null,
+      sanitizedDeviceInfo,
       mockLocationDetected,
     );
 

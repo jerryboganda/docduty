@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { useToast } from '../../contexts/ToastContext';
 import { api } from '../../lib/api';
+import { getErrorMessage } from '../../lib/support';
+import type { WalletResponse, AuthMeResponse } from '../../types/api';
 
 type ViewState = 'loading' | 'empty' | 'error' | 'success';
 
@@ -23,6 +25,11 @@ interface WalletBalance {
   total_earned: number;
 }
 
+interface BankDetails {
+  bank_name: string;
+  masked_account: string;
+}
+
 export default function DoctorWallet() {
   const toast = useToast();
   const [viewState, setViewState] = useState<ViewState>('loading');
@@ -30,21 +37,38 @@ export default function DoctorWallet() {
   const [payoutAmount, setPayoutAmount] = useState('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [balance, setBalance] = useState<WalletBalance>({ available: 0, escrow: 0, total_earned: 0 });
+  const [bankDetails, setBankDetails] = useState<BankDetails | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const fetchWallet = useCallback(async () => {
     try {
       setViewState('loading');
       const [balData, txData] = await Promise.all([
-        api.get('/wallets/balance'),
-        api.get('/wallets/transactions?limit=50'),
+        api.get<WalletResponse>('/wallets/balance'),
+        api.get<{ transactions: Array<{ id: string; amount_pkr?: number; amount?: number; direction?: string; type?: string; created_at?: string; description?: string; shift_title?: string; reference?: string; status?: string }> }>('/wallets/transactions?limit=50'),
       ]);
+      const wallet = balData.wallet;
       setBalance({
-        available: balData.availablePkr || balData.balancePkr || balData.available || balData.balance || 0,
-        escrow: balData.heldPkr || balData.escrow || balData.pending || 0,
-        total_earned: balData.totalEarnedPkr || balData.total_earned || balData.lifetime || 0,
+        available: wallet.balance_pkr || 0,
+        escrow: wallet.held_pkr || 0,
+        total_earned: wallet.total_earned_pkr || 0,
       });
-      const txns: Transaction[] = (txData.transactions || []).map((t: any) => {
+      // Fetch bank details from user profile
+      try {
+        const profileData = await api.get<AuthMeResponse>('/auth/me');
+        const profile: Record<string, unknown> = (profileData.user || profileData) as unknown as Record<string, unknown>;
+        if (profile.bank_name || profile.bankName) {
+          setBankDetails({
+            bank_name: (profile.bank_name || profile.bankName || 'Bank Account') as string,
+            masked_account: (profile.masked_account || profile.maskedAccount || profile.bank_account_last4)
+              ? `**** **** ${profile.bank_account_last4 as string}`
+              : 'Account on file',
+          });
+        }
+      } catch {
+        // bank details not critical — leave null
+      }
+      const txns: Transaction[] = (txData.transactions || []).map((t: { id: string; amount_pkr?: number; amount?: number; direction?: string; type?: string; created_at?: string; description?: string; shift_title?: string; reference?: string; status?: string }) => {
         const amt = t.amount_pkr ?? t.amount ?? 0;
         const isCredit = t.direction === 'credit' || t.type === 'earning' || t.type === 'deposit';
         const isPenalty = t.type === 'penalty' || t.type === 'deduction';
@@ -61,7 +85,6 @@ export default function DoctorWallet() {
       setTransactions(txns);
       setViewState(txns.length === 0 ? 'empty' : 'success');
     } catch (err) {
-      console.error('Failed to fetch wallet:', err);
       setViewState('error');
     }
   }, []);
@@ -70,14 +93,19 @@ export default function DoctorWallet() {
 
   const handlePayout = async () => {
     try {
+      const parsedAmount = Number.parseInt(payoutAmount, 10);
+      if (!Number.isInteger(parsedAmount) || parsedAmount <= 0) {
+        toast.error('Invalid amount', 'Enter a valid payout amount in PKR');
+        return;
+      }
       setSubmitting(true);
-      await api.post('/wallets/payout', { amountPkr: parseInt(payoutAmount) });
+      await api.post('/wallets/payout', { amountPkr: parsedAmount });
       setPayoutModalOpen(false);
       setPayoutAmount('');
       toast.success('Payout requested', 'Your payout is being processed.');
       fetchWallet();
-    } catch (err: any) {
-      toast.error('Payout Failed', err.message || 'Payout request failed');
+    } catch (err: unknown) {
+      toast.error('Payout Failed', getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -241,18 +269,25 @@ export default function DoctorWallet() {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Transfer Method</label>
-                <div className="p-4 border border-slate-200 rounded-xl flex items-center justify-between cursor-pointer hover:border-emerald-500 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center border border-slate-200">
-                      <Building2 className="w-5 h-5 text-slate-500" />
+                {bankDetails ? (
+                  <div className="p-4 border border-slate-200 rounded-xl flex items-center justify-between cursor-pointer hover:border-emerald-500 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center border border-slate-200">
+                        <Building2 className="w-5 h-5 text-slate-500" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-slate-900">{bankDetails.bank_name}</p>
+                        <p className="text-xs text-slate-500">{bankDetails.masked_account}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-sm font-bold text-slate-900">HBL Bank</p>
-                      <p className="text-xs text-slate-500">**** **** 1234</p>
-                    </div>
+                    <CheckCircle className="w-5 h-5 text-emerald-500" />
                   </div>
-                  <CheckCircle className="w-5 h-5 text-emerald-500" />
-                </div>
+                ) : (
+                  <div className="p-4 border border-dashed border-slate-300 rounded-xl text-center">
+                    <p className="text-sm text-slate-500">No bank account on file.</p>
+                    <p className="text-xs text-slate-400 mt-1">Add your bank details in Settings to receive payouts.</p>
+                  </div>
+                )}
               </div>
 
               <button 

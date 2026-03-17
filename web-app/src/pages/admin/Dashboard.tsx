@@ -5,6 +5,9 @@ import {
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useNavigate } from 'react-router-dom';
+import { useToast } from '../../contexts/ToastContext';
+import { getErrorMessage } from '../../lib/support';
+import type { AdminDashboardVerification, AdminDashboardDispute, AdminDashboardAlert, AdminDashboardResponse } from '../../types/api';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -27,39 +30,41 @@ interface DashboardData {
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
+  const toast = useToast();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchDashboard = useCallback(async () => {
     try {
       setLoading(true);
-      const dashData = await api.get('/admin/dashboard');
+      const dashData = await api.get<AdminDashboardResponse & { dashboard?: AdminDashboardResponse }>('/admin/dashboard');
       const d = dashData.dashboard || dashData;
       setData({
-        pendingVerifications: d.pending_verifications ?? d.pendingVerifications ?? 0,
-        openDisputes: d.open_disputes ?? d.openDisputes ?? 0,
-        pendingPayouts: d.pending_payouts ?? d.pendingPayouts ?? 0,
-        suspiciousAttendance: d.suspicious_attendance ?? d.suspiciousAttendance ?? 0,
-        recentVerifications: (d.recent_verifications || []).map((v: any) => ({
-          name: v.full_name || v.name || 'Unknown',
-          type: v.role === 'doctor' ? 'Doctor' : 'Facility',
-          submitted: v.created_at ? timeAgo(v.created_at) : 'Recently',
+        pendingVerifications: d.stats?.pending_verifications ?? d.stats?.pendingVerifications ?? 0,
+        openDisputes: d.stats?.open_disputes ?? d.stats?.openDisputes ?? 0,
+        pendingPayouts: d.stats?.pending_payouts ?? d.stats?.pendingPayouts ?? 0,
+        suspiciousAttendance: d.stats?.suspicious_attendance ?? d.stats?.suspiciousAttendance ?? 0,
+        recentVerifications: (d.recent_verifications || []).map((v: AdminDashboardVerification) => ({
+          name: v.name || 'Unknown',
+          type: v.type === 'doctor' ? 'Doctor' : 'Facility',
+          submitted: v.time ? timeAgo(v.time) : 'Recently',
         })),
-        recentDisputes: (d.recent_disputes || []).map((dp: any) => ({
+        recentDisputes: (d.recent_disputes || []).map((dp: AdminDashboardDispute) => ({
           id: dp.id?.slice(0, 8) || 'DSP',
-          issue: dp.description || dp.type || 'Dispute',
-          age: dp.created_at ? timeAgo(dp.created_at) : 'Recently',
-          priority: dp.priority || 'Medium',
+          issue: dp.type || 'Dispute',
+          age: dp.time ? timeAgo(dp.time) : 'Recently',
+          priority: dp.status === 'escalated' ? 'High' : dp.status === 'open' ? 'Medium' : 'Low',
         })),
-        alerts: (d.alerts || []).map((a: any) => ({
+        alerts: (d.alerts || []).map((a: AdminDashboardAlert) => ({
           type: a.type || 'info',
-          msg: a.message || a.msg || '',
-          time: a.created_at ? timeAgo(a.created_at) : 'Recently',
+          msg: a.msg || '',
+          time: 'Recently',
         })),
       });
-    } catch (err) {
-      console.error('Failed to fetch dashboard:', err);
-      // Fallback to zeros
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
+      toast.error('Failed to load dashboard');
       setData({
         pendingVerifications: 0, openDisputes: 0, pendingPayouts: 0, suspiciousAttendance: 0,
         recentVerifications: [], recentDisputes: [], alerts: [],
@@ -67,7 +72,7 @@ export default function AdminDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
 
@@ -81,6 +86,15 @@ export default function AdminDashboard() {
   }
   return (
     <div className="space-y-5 pb-8">
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm text-red-700">
+            <AlertTriangle className="w-4 h-4" />
+            <span>{error}</span>
+          </div>
+          <button onClick={() => { setError(null); fetchDashboard(); }} className="text-xs font-medium text-red-600 hover:text-red-800">Retry</button>
+        </div>
+      )}
       <div>
         <h1 className="text-xl font-bold text-slate-900">Ops Dashboard</h1>
         <p className="text-sm text-slate-500">Overview of platform operations and pending actions.</p>
@@ -146,7 +160,7 @@ export default function AdminDashboard() {
               {(data.recentVerifications.length > 0 ? data.recentVerifications : [
                 { name: 'No pending verifications', type: '-', submitted: '-' }
               ]).map((item, i) => (
-                <div key={i} onClick={() => navigate('/admin/verifications')} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+                <div key={`${item.name}-${item.type}`} onClick={() => navigate('/admin/verifications')} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center border border-slate-200">
                       <UserCircle className="w-5 h-5 text-slate-500" />
@@ -176,7 +190,7 @@ export default function AdminDashboard() {
               {(data.recentDisputes.length > 0 ? data.recentDisputes : [
                 { id: '-', issue: 'No active disputes', age: '-', priority: 'Low' }
               ]).map((item, i) => (
-                <div key={i} onClick={() => navigate('/admin/disputes')} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+                <div key={item.id} onClick={() => navigate('/admin/disputes')} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-sm font-bold text-slate-900">{item.id}</span>
@@ -207,7 +221,7 @@ export default function AdminDashboard() {
             {(data.alerts.length > 0 ? data.alerts : [
               { type: 'info', msg: 'System operating normally', time: 'Now' }
             ]).map((alert, i) => (
-              <div key={i} className="flex items-start gap-3">
+              <div key={`${alert.type}-${alert.msg}`} className="flex items-start gap-3">
                 <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
                   alert.type === 'error' ? 'bg-red-500' : 
                   alert.type === 'warning' ? 'bg-amber-500' : 'bg-blue-500'

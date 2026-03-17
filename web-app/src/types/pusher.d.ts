@@ -1,11 +1,11 @@
 declare module 'pusher-js' {
   interface Channel {
-    bind(event: string, callback: (data: any) => void): this;
-    unbind(event: string, callback?: (data: any) => void): this;
+    bind(event: string, callback: (data: unknown) => void): this;
+    unbind(event: string, callback?: (data: unknown) => void): this;
   }
 
   interface ConnectionManager {
-    bind(event: string, callback: (data?: any) => void): void;
+    bind(event: string, callback: (data?: unknown) => void): void;
   }
 
   interface Options {
@@ -42,7 +42,7 @@ declare module 'pusher' {
 
   class Pusher {
     constructor(options: Options);
-    trigger(channel: string, event: string, data: Record<string, any>): Promise<any>;
+    trigger(channel: string, event: string, data: Record<string, unknown>): Promise<unknown>;
   }
 
   export default Pusher;

@@ -8,6 +8,7 @@ import { getDb } from '../database/schema.js';
 import { authMiddleware, type AuthRequest, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../utils/audit.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import type { UserRow, DoctorProfileRow, FacilityAccountRow, UserPreferencesRow } from '../types.js';
 
 export const usersRouter = Router();
 usersRouter.use(authMiddleware);
@@ -25,7 +26,7 @@ usersRouter.get(
   '/profile',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    const user = await db.prepare<any>(`
+    const user = await db.prepare<Pick<UserRow, 'id' | 'phone' | 'email' | 'role' | 'status' | 'verification_status' | 'avatar_url' | 'created_at' | 'updated_at'>>(`
       SELECT id, phone, email, role, status, verification_status, avatar_url, created_at, updated_at
       FROM users
       WHERE id = ?
@@ -36,9 +37,9 @@ usersRouter.get(
       return;
     }
 
-    let profile: any = null;
+    let profile: Record<string, unknown> | null = null;
     if (user.role === 'doctor') {
-      profile = await db.prepare<any>(`
+      const doctorProfile = await db.prepare<DoctorProfileRow & { specialty_name: string | null; city_name: string | null; province_name: string | null }>(`
         SELECT dp.*, s.name AS specialty_name, c.name AS city_name,
           p.name AS province_name
         FROM doctor_profiles dp
@@ -48,28 +49,30 @@ usersRouter.get(
         WHERE dp.user_id = ?
       `).get(user.id);
 
-      if (profile) {
-        profile.skills = await db.prepare(`
+      if (doctorProfile) {
+        const skills = await db.prepare(`
           SELECT sk.id, sk.name
           FROM doctor_skills ds
           JOIN skills sk ON ds.skill_id = sk.id
           WHERE ds.doctor_id = ?
-        `).all(profile.id);
+        `).all(doctorProfile.id);
+        profile = { ...doctorProfile, skills };
       }
     } else if (user.role === 'facility_admin') {
-      profile = await db.prepare<any>(`
+      const facilityProfile = await db.prepare<FacilityAccountRow & { city_name: string | null }>(`
         SELECT fa.*, c.name AS city_name
         FROM facility_accounts fa
         LEFT JOIN cities c ON fa.city_id = c.id
         WHERE fa.user_id = ?
       `).get(user.id);
 
-      if (profile) {
-        profile.locations = await db.prepare(`
+      if (facilityProfile) {
+        const locations = await db.prepare(`
           SELECT *
           FROM facility_locations
           WHERE facility_id = ? AND is_active = TRUE
-        `).all(profile.id);
+        `).all(facilityProfile.id);
+        profile = { ...facilityProfile, locations };
       }
     }
 
@@ -208,7 +211,7 @@ usersRouter.put(
         }
 
         if (Array.isArray(req.body.skillIds)) {
-          const profile = await db.prepare<any>('SELECT id FROM doctor_profiles WHERE user_id = ?').get(req.user!.userId);
+          const profile = await db.prepare<{ id: string }>('SELECT id FROM doctor_profiles WHERE user_id = ?').get(req.user!.userId);
           if (profile) {
             await db.prepare('DELETE FROM doctor_skills WHERE doctor_id = ?').run(profile.id);
             const insertSkill = db.prepare('INSERT INTO doctor_skills (doctor_id, skill_id) VALUES (?, ?)');
@@ -242,10 +245,10 @@ usersRouter.get(
   '/preferences',
   asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
     const db = getDb();
-    let prefs = await db.prepare<any>('SELECT * FROM user_preferences WHERE user_id = ?').get(req.user!.userId);
+    let prefs = await db.prepare<UserPreferencesRow>('SELECT * FROM user_preferences WHERE user_id = ?').get(req.user!.userId);
     if (!prefs) {
       await db.prepare('INSERT INTO user_preferences (user_id) VALUES (?)').run(req.user!.userId);
-      prefs = await db.prepare<any>('SELECT * FROM user_preferences WHERE user_id = ?').get(req.user!.userId);
+      prefs = await db.prepare<UserPreferencesRow>('SELECT * FROM user_preferences WHERE user_id = ?').get(req.user!.userId);
     }
     res.json(prefs);
   }),
@@ -312,7 +315,7 @@ usersRouter.put(
 
 /**
  * GET /api/users/:id
- * Get user by ID (admin or self)
+ * Get user by ID (admin or self gets full data; others get restricted view)
  */
 usersRouter.get(
   '/:id',
@@ -320,12 +323,10 @@ usersRouter.get(
     const db = getDb();
     const targetId = req.params.id;
 
-    if (req.user!.role !== 'platform_admin' && req.user!.userId !== targetId) {
-      res.status(403).json({ error: 'Insufficient permissions' });
-      return;
-    }
+    // H-006: Non-admin, non-self users get restricted profile (no phone/PII)
+    const isPrivileged = req.user!.role === 'platform_admin' || req.user!.userId === targetId;
 
-    const user = await db.prepare<any>(`
+    const user = await db.prepare<Pick<UserRow, 'id' | 'phone' | 'email' | 'role' | 'status' | 'verification_status' | 'avatar_url' | 'created_at'>>(`
       SELECT id, phone, email, role, status, verification_status, avatar_url, created_at
       FROM users
       WHERE id = ?
@@ -336,22 +337,29 @@ usersRouter.get(
       return;
     }
 
-    let profile: any = null;
+    let profile: DoctorProfileRow | FacilityAccountRow | null = null;
     if (user.role === 'doctor') {
-      profile = await db.prepare<any>(`
+      profile = (await db.prepare<DoctorProfileRow & { specialty_name: string | null; city_name: string | null }>(`
         SELECT dp.*, s.name AS specialty_name, c.name AS city_name
         FROM doctor_profiles dp
         LEFT JOIN specialties s ON dp.specialty_id = s.id
         LEFT JOIN cities c ON dp.city_id = c.id
         WHERE dp.user_id = ?
-      `).get(user.id);
+      `).get(user.id)) ?? null;
     } else if (user.role === 'facility_admin') {
-      profile = await db.prepare<any>(`
+      profile = (await db.prepare<FacilityAccountRow & { city_name: string | null }>(`
         SELECT fa.*, c.name AS city_name
         FROM facility_accounts fa
         LEFT JOIN cities c ON fa.city_id = c.id
         WHERE fa.user_id = ?
-      `).get(user.id);
+      `).get(user.id)) ?? null;
+    }
+
+    if (!isPrivileged) {
+      // Strip PII for non-privileged callers
+      const { phone: _phone, email: _email, ...safeUser } = user;
+      res.json({ ...safeUser, profile });
+      return;
     }
 
     res.json({ ...user, profile });

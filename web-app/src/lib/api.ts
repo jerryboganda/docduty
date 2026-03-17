@@ -19,7 +19,7 @@ export class ApiError extends Error {
   }
 }
 
-interface ApiResponse<T = any> {
+interface ApiResponse<T = unknown> {
   data: T | null;
   error: string | null;
   status: number;
@@ -28,6 +28,7 @@ interface ApiResponse<T = any> {
 class ApiClient {
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor() {
     this.accessToken = localStorage.getItem('docduty_access_token');
@@ -64,7 +65,7 @@ class ApiClient {
   private async request<T>(
     method: string,
     endpoint: string,
-    body?: any,
+    body?: Record<string, unknown> | FormData,
     skipAuth = false
   ): Promise<ApiResponse<T>> {
     const url = `${API_BASE}${endpoint}`;
@@ -107,12 +108,24 @@ class ApiClient {
         error: response.ok ? null : (data?.error || `Request failed (${response.status})`),
         status: response.status,
       };
-    } catch (err: any) {
-      return { data: null, error: err.message || 'Network error', status: 0 };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Network error';
+      return { data: null, error: message, status: 0 };
     }
   }
 
   private async attemptRefresh(): Promise<boolean> {
+    // Deduplicate concurrent refresh attempts — all callers share the same promise
+    if (this.refreshPromise) return this.refreshPromise;
+    this.refreshPromise = this.doRefresh();
+    try {
+      return await this.refreshPromise;
+    } finally {
+      this.refreshPromise = null;
+    }
+  }
+
+  private async doRefresh(): Promise<boolean> {
     try {
       const response = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
@@ -135,7 +148,7 @@ class ApiClient {
    * Upload a file using multipart/form-data.
    * Returns the parsed JSON response on success, throws ApiError on failure.
    */
-  async uploadFile<T = any>(endpoint: string, file: File, fieldName = 'avatar'): Promise<T> {
+  async uploadFile<T = unknown>(endpoint: string, file: File, fieldName = 'avatar'): Promise<T> {
     const url = `${API_BASE}${endpoint}`;
     const formData = new FormData();
     formData.append(fieldName, file);
@@ -175,9 +188,10 @@ class ApiClient {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new ApiError(data?.error || `Upload failed (${response.status})`, response.status);
       return data as T;
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
-      throw new ApiError(err.message || 'Upload failed', 0);
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      throw new ApiError(message, 0);
     }
   }
 
@@ -185,25 +199,25 @@ class ApiClient {
    * Direct data return methods — return T on success, throw ApiError on failure.
    * This is what most pages use: const data = await api.get('/endpoint')
    */
-  async get<T = any>(endpoint: string, skipAuth = false): Promise<T> {
+  async get<T = unknown>(endpoint: string, skipAuth = false): Promise<T> {
     const { data, error, status } = await this.request<T>('GET', endpoint, undefined, skipAuth);
     if (error) throw new ApiError(error, status);
     return data as T;
   }
 
-  async post<T = any>(endpoint: string, body?: any, skipAuth = false): Promise<T> {
+  async post<T = unknown>(endpoint: string, body?: Record<string, unknown>, skipAuth = false): Promise<T> {
     const { data, error, status } = await this.request<T>('POST', endpoint, body, skipAuth);
     if (error) throw new ApiError(error, status);
     return data as T;
   }
 
-  async put<T = any>(endpoint: string, body?: any): Promise<T> {
+  async put<T = unknown>(endpoint: string, body?: Record<string, unknown>): Promise<T> {
     const { data, error, status } = await this.request<T>('PUT', endpoint, body);
     if (error) throw new ApiError(error, status);
     return data as T;
   }
 
-  async delete<T = any>(endpoint: string): Promise<T> {
+  async delete<T = unknown>(endpoint: string): Promise<T> {
     const { data, error, status } = await this.request<T>('DELETE', endpoint);
     if (error) throw new ApiError(error, status);
     return data as T;
@@ -213,10 +227,10 @@ class ApiClient {
    * Safe methods — return { data, error, status } for callers that need
    * explicit error handling without try/catch.
    */
-  safeGet<T = any>(endpoint: string, skipAuth = false) { return this.request<T>('GET', endpoint, undefined, skipAuth); }
-  safePost<T = any>(endpoint: string, body?: any, skipAuth = false) { return this.request<T>('POST', endpoint, body, skipAuth); }
-  safePut<T = any>(endpoint: string, body?: any) { return this.request<T>('PUT', endpoint, body); }
-  safeDelete<T = any>(endpoint: string) { return this.request<T>('DELETE', endpoint); }
+  safeGet<T = unknown>(endpoint: string, skipAuth = false) { return this.request<T>('GET', endpoint, undefined, skipAuth); }
+  safePost<T = unknown>(endpoint: string, body?: Record<string, unknown>, skipAuth = false) { return this.request<T>('POST', endpoint, body, skipAuth); }
+  safePut<T = unknown>(endpoint: string, body?: Record<string, unknown>) { return this.request<T>('PUT', endpoint, body); }
+  safeDelete<T = unknown>(endpoint: string) { return this.request<T>('DELETE', endpoint); }
 }
 
 export const api = new ApiClient();

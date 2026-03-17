@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bell, Check, CheckCheck, Trash2, Filter, RefreshCw, ChevronDown, ExternalLink } from 'lucide-react';
+import { Bell, CheckCheck, Filter, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { formatRelative } from '../lib/dateUtils';
 import { useToast } from '../contexts/ToastContext';
+import type { NotificationsResponse } from '../types/api';
 
 interface Notification {
   id: string;
@@ -45,7 +46,7 @@ export default function Notifications() {
     try {
       setLoading(true);
       const unreadOnly = filter === 'unread' ? '&unreadOnly=true' : '';
-      const data = await api.get<any>(`/notifications?page=${page}&limit=30${unreadOnly}`);
+      const data = await api.get<NotificationsResponse>(`/notifications?page=${page}&limit=30${unreadOnly}`);
       setNotifications(data.notifications || []);
       setTotal(data.total || 0);
     } catch {
@@ -109,7 +110,7 @@ export default function Notifications() {
           <button onClick={markAllRead} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
             <CheckCheck className="w-3.5 h-3.5" /> Mark All Read
           </button>
-          <button onClick={fetchNotifications} className="p-1.5 text-slate-400 hover:text-slate-600 transition-colors">
+          <button onClick={fetchNotifications} className="p-1.5 text-slate-400 hover:text-slate-600 transition-colors" aria-label="Refresh notifications">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
         </div>

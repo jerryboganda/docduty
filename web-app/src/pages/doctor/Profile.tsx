@@ -10,7 +10,9 @@ import {
 import { useToast } from '../../contexts/ToastContext';
 import { api } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
+import { getErrorMessage } from '../../lib/support';
 import AvatarUpload from '../../components/AvatarUpload';
+import type { SkillsResponse, ApiVerificationDocument, ApiSkill, LucideIcon } from '../../types/api';
 import { useDoctorVerification } from '../../hooks/useDoctorVerification';
 
 type ViewState = 'loading' | 'error' | 'success';
@@ -66,7 +68,7 @@ const MISSING_ITEM_LABELS: Record<string, { label: string; step: Step }> = {
   'documents.postgraduate_certificate': { label: 'Postgraduate Certificate', step: 4 },
 };
 
-const DOC_ICONS: Record<string, React.ComponentType<any>> = {
+const DOC_ICONS: Record<string, LucideIcon> = {
   pmdc_certificate: FileText,
   mbbs_degree: GraduationCap,
   cnic_front: CreditCard,
@@ -91,14 +93,14 @@ const fieldVariants = {
   show: { opacity: 1, y: 0, transition: { duration: 0.32, ease: [0.4, 0, 0.2, 1] } },
 };
 
-function isStepComplete(s: Step, draft: any, docMap: Map<string, any>, avatarUrl?: string): boolean {
-  const pi = draft?.personalIdentity || {};
-  const pp = draft?.professionalPractice || {};
-  const ed = draft?.education || {};
-  const dc = draft?.declaration || {};
+function isStepComplete(s: Step, draft: Record<string, unknown>, docMap: Map<string, unknown>, avatarUrl?: string): boolean {
+  const pi = (draft?.personalIdentity as Record<string, unknown>) || {};
+  const pp = (draft?.professionalPractice as Record<string, unknown>) || {};
+  const ed = (draft?.education as Record<string, unknown>) || {};
+  const dc = (draft?.declaration as Record<string, unknown>) || {};
   switch (s) {
     case 1: return !!(pi.legalFullName && pi.dateOfBirth && pi.cnicNumber && pi.email);
-    case 2: return !!(pp.currentDesignation && pp.primarySpecialty && pp.pmdcRegistrationNumber && pp.currentPracticeCity && (pp.preferredWorkCities || []).length > 0);
+    case 2: return !!(pp.currentDesignation && pp.primarySpecialty && pp.pmdcRegistrationNumber && pp.currentPracticeCity && ((pp.preferredWorkCities as string[]) || []).length > 0);
     case 3: return !!(ed.mbbsInstitution && ed.mbbsGraduationYear && ed.houseJobStatus);
     case 4: {
       const has = (t: string) => !!docMap.get(t) || (t === 'profile_photo' && !!avatarUrl);
@@ -108,11 +110,11 @@ function isStepComplete(s: Step, draft: any, docMap: Map<string, any>, avatarUrl
   }
 }
 
-function computeDraftMissingItems(draftData: any, docMap: Map<string, any>, email: string, avatarUrl?: string, requiresPostgraduateDocument?: boolean): string[] {
-  const personal = draftData?.personalIdentity || {};
-  const professional = draftData?.professionalPractice || {};
-  const education = draftData?.education || {};
-  const declaration = draftData?.declaration || {};
+function computeDraftMissingItems(draftData: Record<string, unknown>, docMap: Map<string, unknown>, email: string, avatarUrl?: string, requiresPostgraduateDocument?: boolean): string[] {
+  const personal = (draftData?.personalIdentity as Record<string, unknown>) || {};
+  const professional = (draftData?.professionalPractice as Record<string, unknown>) || {};
+  const education = (draftData?.education as Record<string, unknown>) || {};
+  const declaration = (draftData?.declaration as Record<string, unknown>) || {};
   const missing: string[] = [];
 
   if (!String(personal.legalFullName || '').trim()) missing.push('personalIdentity.legalFullName');
@@ -159,8 +161,8 @@ export default function DoctorProfile() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
-  const [documents, setDocuments] = useState<any[]>([]);
-  const [draft, setDraft] = useState<any>(emptyDraft);
+  const [documents, setDocuments] = useState<ApiVerificationDocument[]>([]);
+  const [draft, setDraft] = useState<Record<string, unknown>>(emptyDraft);
   const [form, setForm] = useState({ full_name: '', email: '', phone: '', city: '', specialty: '', pmdc_number: '' });
   const [skills, setSkills] = useState<string[]>([]);
   const [allSkills, setAllSkills] = useState<{ id: string; name: string }[]>([]);
@@ -170,28 +172,28 @@ export default function DoctorProfile() {
       setViewState('loading');
       const [profileData, skillsData, verificationData] = await Promise.all([
         api.get('/users/profile'),
-        api.get('/reference/skills').catch(() => ({ skills: [] })),
+        api.get<SkillsResponse>('/reference/skills').catch(() => ({ skills: [] })),
         api.get('/doctor/verification-draft'),
       ]);
-      const p: any = (profileData as any).user || profileData;
-      const prof = p.profile || p;
-      const nextDraft = { ...emptyDraft, ...((verificationData as any).draftData || {}) };
-      nextDraft.personalIdentity = { ...emptyDraft.personalIdentity, ...nextDraft.personalIdentity, legalFullName: nextDraft.personalIdentity.legalFullName || prof.full_name || '', email: nextDraft.personalIdentity.email || p.email || '', cnicNumber: nextDraft.personalIdentity.cnicNumber || prof.cnic || '' };
-      nextDraft.professionalPractice = { ...emptyDraft.professionalPractice, ...nextDraft.professionalPractice, primarySpecialty: nextDraft.professionalPractice.primarySpecialty || prof.specialty_name || '', pmdcRegistrationNumber: nextDraft.professionalPractice.pmdcRegistrationNumber || prof.pmdc_license || '', currentPracticeCity: nextDraft.professionalPractice.currentPracticeCity || prof.city_name || '' };
+      const p = ((profileData as Record<string, unknown>).user || profileData) as Record<string, unknown>;
+      const prof = (p.profile || p) as Record<string, unknown>;
+      const nextDraft = { ...emptyDraft, ...((verificationData as Record<string, unknown> as { draftData?: typeof emptyDraft }).draftData || {}) };
+      nextDraft.personalIdentity = { ...emptyDraft.personalIdentity, ...nextDraft.personalIdentity, legalFullName: nextDraft.personalIdentity.legalFullName || (prof.full_name as string) || '', email: nextDraft.personalIdentity.email || (p.email as string) || '', cnicNumber: nextDraft.personalIdentity.cnicNumber || (prof.cnic as string) || '' };
+      nextDraft.professionalPractice = { ...emptyDraft.professionalPractice, ...nextDraft.professionalPractice, primarySpecialty: nextDraft.professionalPractice.primarySpecialty || (prof.specialty_name as string) || '', pmdcRegistrationNumber: nextDraft.professionalPractice.pmdcRegistrationNumber || (prof.pmdc_license as string) || '', currentPracticeCity: nextDraft.professionalPractice.currentPracticeCity || (prof.city_name as string) || '' };
       nextDraft.education = { ...emptyDraft.education, ...nextDraft.education };
       nextDraft.declaration = { ...emptyDraft.declaration, ...nextDraft.declaration };
       setDraft(nextDraft);
       setStep(Number(nextDraft.step || 1) as Step);
-      setDocuments((verificationData as any).documents || []);
+      setDocuments((verificationData as Record<string, unknown> as { documents?: ApiVerificationDocument[] }).documents || []);
       setForm({
-        full_name: nextDraft.personalIdentity.legalFullName || prof.full_name || '',
-        email: nextDraft.personalIdentity.email || p.email || '',
-        phone: p.phone || '',
-        city: nextDraft.professionalPractice.currentPracticeCity || prof.city_name || '',
-        specialty: nextDraft.professionalPractice.primarySpecialty || prof.specialty_name || '',
-        pmdc_number: nextDraft.professionalPractice.pmdcRegistrationNumber || prof.pmdc_license || '',
+        full_name: nextDraft.personalIdentity.legalFullName || (prof.full_name as string) || '',
+        email: nextDraft.personalIdentity.email || (p.email as string) || '',
+        phone: (p.phone as string) || '',
+        city: nextDraft.professionalPractice.currentPracticeCity || (prof.city_name as string) || '',
+        specialty: nextDraft.professionalPractice.primarySpecialty || (prof.specialty_name as string) || '',
+        pmdc_number: nextDraft.professionalPractice.pmdcRegistrationNumber || (prof.pmdc_license as string) || '',
       });
-      setSkills((prof.skills || []).map((s: any) => s.name || s));
+      setSkills(((prof.skills || []) as Array<ApiSkill | string>).map((s: ApiSkill | string) => typeof s === 'string' ? s : s.name));
       setAllSkills(skillsData.skills || []);
       setViewState('success');
     } catch {
@@ -203,7 +205,7 @@ export default function DoctorProfile() {
   useEffect(() => { if (summary && ['NOT_STARTED', 'IN_PROGRESS', 'RESUBMISSION_REQUIRED', 'REVERIFICATION_REQUIRED'].includes(summary.status)) setWizardOpen(true); }, [summary]);
 
   const docMap = useMemo(() => {
-    const map = new Map<string, any>();
+    const map = new Map<string, ApiVerificationDocument>();
     documents.forEach((doc) => { if (!doc.replaced_at) map.set(String(doc.document_type), doc); });
     return map;
   }, [documents]);
@@ -281,24 +283,24 @@ export default function DoctorProfile() {
     setStep(nextStep);
   };
 
-  const updateDraft = (section: string, field: string, value: any) => {
+  const updateDraft = (section: string, field: string, value: unknown) => {
     if (isReadOnly) return;
     if (section === 'personalIdentity' && field === 'legalFullName') {
-      setForm((current) => ({ ...current, full_name: value }));
+      setForm((current) => ({ ...current, full_name: value as string }));
     }
     if (section === 'personalIdentity' && field === 'email') {
-      setForm((current) => ({ ...current, email: value }));
+      setForm((current) => ({ ...current, email: value as string }));
     }
     if (section === 'professionalPractice' && field === 'primarySpecialty') {
-      setForm((current) => ({ ...current, specialty: value }));
+      setForm((current) => ({ ...current, specialty: value as string }));
     }
     if (section === 'professionalPractice' && field === 'currentPracticeCity') {
-      setForm((current) => ({ ...current, city: value }));
+      setForm((current) => ({ ...current, city: value as string }));
     }
     if (section === 'professionalPractice' && field === 'pmdcRegistrationNumber') {
-      setForm((current) => ({ ...current, pmdc_number: value }));
+      setForm((current) => ({ ...current, pmdc_number: value as string }));
     }
-    setDraft((current: any) => ({ ...current, [section]: { ...current[section], [field]: value } }));
+    setDraft((current: Record<string, unknown>) => ({ ...current, [section]: { ...(current[section] as Record<string, unknown>), [field]: value } }));
   };
 
   const saveDraft = async (nextStep: Step = step) => {
@@ -309,8 +311,12 @@ export default function DoctorProfile() {
     const payload = { ...draft, step: String(nextStep) };
     setDraft(payload);
     setStep(nextStep);
-    await api.post('/doctor/verification-draft', payload);
-    await refresh();
+    try {
+      await api.post('/doctor/verification-draft', payload);
+      await refresh();
+    } catch (err: unknown) {
+      toast.error('Save Failed', getErrorMessage(err));
+    }
   };
 
   const goToStep = (nextStep: Step) => {
@@ -330,8 +336,8 @@ export default function DoctorProfile() {
       toast.success('Profile saved successfully');
       await load();
       await refresh();
-    } catch (err: any) {
-      toast.error('Save Failed', err.message || 'Failed to save profile');
+    } catch (err: unknown) {
+      toast.error('Save Failed', getErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -350,8 +356,8 @@ export default function DoctorProfile() {
       setWizardOpen(false);
       await load();
       await refresh();
-    } catch (err: any) {
-      toast.error('Submission Failed', err.message || 'Unable to submit verification');
+    } catch (err: unknown) {
+      toast.error('Submission Failed', getErrorMessage(err));
       await refresh();
     } finally {
       setSubmitting(false);
@@ -371,14 +377,14 @@ export default function DoctorProfile() {
     formData.append('documentType', type);
     try {
       setUploading(type);
-      const response = await fetch(`${(import.meta as any).env.VITE_API_URL || '/api'}/doctor/verification-documents`, { method: 'POST', headers: { Authorization: `Bearer ${api.getAccessToken()}` }, body: formData });
+      const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/doctor/verification-documents`, { method: 'POST', headers: { Authorization: `Bearer ${api.getAccessToken()}` }, body: formData });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Upload failed');
       toast.success('Document uploaded');
       await load();
       await refresh();
-    } catch (err: any) {
-      toast.error('Upload Failed', err.message || 'Unable to upload document');
+    } catch (err: unknown) {
+      toast.error('Upload Failed', getErrorMessage(err));
     } finally {
       setUploading(null);
       event.target.value = '';
