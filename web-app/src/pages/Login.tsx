@@ -76,6 +76,7 @@ export default function Login() {
     if (hostSurface === 'portal') return value !== 'platform_admin';
     return true;
   });
+  const roleGridCols = allowedRoles.length === 1 ? 'grid-cols-1' : allowedRoles.length === 2 ? 'grid-cols-2' : 'grid-cols-3';
 
   const handleSubmit = useCallback(async () => {
     if (mode === 'login') {
@@ -249,7 +250,7 @@ export default function Login() {
               <span className="text-[13px] font-medium text-slate-700">
                 {mode === 'login' ? 'Sign in as' : 'Account type'}
               </span>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-100 border border-slate-200">
+              <div className={`grid ${roleGridCols} gap-1.5 p-1 rounded-lg bg-slate-100 border border-slate-200`}>
                 {allowedRoles.map(({ value, label, icon: Icon, accent }) => (
                   <button
                     key={value}
